@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Performance Metrics",
+  "version": "1.0",
+  "description": "Displays web performance metrics like TTFB, FCP, and LCP.",
+  "permissions": ["tabs", "storage"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "metrics_icon.png",
+      "48": "metrics_icon.png",
+      "128": "metrics_icon.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ]
+}
