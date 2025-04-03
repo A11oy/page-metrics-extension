@@ -3,7 +3,7 @@
   "name": "Performance Metrics",
   "version": "1.0",
   "description": "Displays web performance metrics like TTFB, FCP, and LCP.",
-  "permissions": ["tabs", "storage"],
+  "permissions": ["tabs", "storage", "activeTab"],
   "background": {
     "service_worker": "background.js"
   },
