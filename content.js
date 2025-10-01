@@ -528,7 +528,7 @@ function collectFallbackMetrics() {
         estimated: !LCPTime,
       },
       CLS: {
-        value: clsObserverInstance.getValue(),
+        value: clsObserverInstance ? clsObserverInstance.getValue() : 0,
         unit: "score",
         estimated: false,
       },
@@ -939,8 +939,10 @@ class CLSDebugger {
 // Initialize CLS debugger
 const clsDebugger = new CLSDebugger();
 
-// Connect CLS observer with debugger
-clsObserverInstance.setDebugger(clsDebugger);
+// Connect CLS observer with debugger (only if observer is initialized)
+if (clsObserverInstance) {
+  clsObserverInstance.setDebugger(clsDebugger);
+}
 
 // Function to sync CLS debugger with global CLS score
 function syncCLSDebugger() {
@@ -1039,12 +1041,14 @@ function resetPerformanceObservers() {
 
 // Enhanced CLS reset for SPA navigation with proper session management
 function resetCLSForSPA() {
-  // Reset CLS observer with session boundary handling
-  clsObserverInstance.reset();
+  // Reset CLS observer with session boundary handling (only if initialized)
+  if (clsObserverInstance) {
+    clsObserverInstance.reset();
 
-  // For SPA navigation, we need to establish a new session boundary
-  // This ensures CLS measurements are accurate for the new view
-  clsObserverInstance.observe();
+    // For SPA navigation, we need to establish a new session boundary
+    // This ensures CLS measurements are accurate for the new view
+    clsObserverInstance.observe();
+  }
 
   // Reset global CLS score
   CLSScore = 0;
@@ -1259,7 +1263,7 @@ function updateMetricsWithEnhancedVisualCompletion(stabilityMetrics) {
         unit: "s",
       },
       CLS: {
-        value: clsObserverInstance.getValue(),
+        value: clsObserverInstance ? clsObserverInstance.getValue() : 0,
         unit: "score",
       },
       DOMLoadTime: {
@@ -1999,7 +2003,7 @@ class SmartMetricUpdateSystem {
             selector: lcpElementSelector,
           },
           CLS: {
-            value: clsObserverInstance.getValue(),
+            value: clsObserverInstance ? clsObserverInstance.getValue() : 0,
             unit: "score",
           },
           DOMLoadTime: {
@@ -2034,7 +2038,7 @@ class SmartMetricUpdateSystem {
           selector: lcpElementSelector,
         },
         CLS: {
-          value: clsObserverInstance.getValue(),
+          value: clsObserverInstance ? clsObserverInstance.getValue() : 0,
           unit: "score",
         },
         DOMLoadTime: {
@@ -2433,7 +2437,7 @@ function collectMetrics() {
               selector: lcpElementSelector,
             },
             CLS: {
-              value: Math.max(0, clsObserverInstance.getValue()),
+              value: Math.max(0, clsObserverInstance ? clsObserverInstance.getValue() : 0),
               unit: "score",
             },
             DOMLoadTime: {
@@ -2496,7 +2500,7 @@ function collectMetrics() {
               unit: "s",
             },
             CLS: {
-              value: clsObserverInstance.getValue(),
+              value: clsObserverInstance ? clsObserverInstance.getValue() : 0,
               unit: "score",
             },
             DOMLoadTime: {
@@ -3190,7 +3194,7 @@ function initMutationObserver() {
     );
 
     if (significantChanges) {
-      urlObserver();
+      urlChangeDetector.checkUrlChange();
     }
   });
 
@@ -3393,6 +3397,11 @@ function validateCurrentMetrics() {
       }
     } else {
       validation.warnings.push("CLS observer not initialized");
+      validation.metrics.CLS = {
+        value: 0,
+        isValid: true,
+        source: "not_available",
+      };
     }
 
     // Validate LCP measurement
