@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "Performance Metrics",
-  "version": "1.0",
-  "description": "Displays web performance metrics like TTFB, FCP, and LCP.",
-  "permissions": ["tabs", "storage", "activeTab"],
+  "name": "Core Web Vitals Assessment",
+  "version": "2.0",
+  "description": "Comprehensive Core Web Vitals assessment tool with real-time CLS tracking, SPA support, visual debugging, and JSON export capabilities for web performance analysis.",
+  "permissions": ["tabs", "storage", "activeTab", "clipboardWrite"],
   "background": {
     "service_worker": "background.js"
   },

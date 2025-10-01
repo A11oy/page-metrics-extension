@@ -1,24 +1,199 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
   <head>
-    <title>Performance Metrics</title>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0"
+    />
+    <title>Core Web Vitals Assessment</title>
     <script
       src="popup.js"
       defer
     ></script>
-    <style>
-      body {
-        font-family: Arial, sans-serif;
-        padding: 10px;
-      }
-      #metrics {
-        white-space: pre-wrap;
-      }
-    </style>
-    <link rel="stylesheet" href="styles.css" />
+    <link
+      rel="stylesheet"
+      href="styles.css"
+    />
   </head>
   <body>
-    <h2>Performance Metrics</h2>
-    <pre id="metrics">Loading...</pre>
+    <header role="banner">
+      <h1 id="main-heading">Core Web Vitals</h1>
+      <div
+        id="page-info"
+        aria-live="polite"
+      >
+        <span
+          id="page-title"
+          class="page-title"
+          >Loading...</span
+        >
+        <span
+          id="last-updated"
+          class="last-updated"
+          aria-label="Last updated time"
+        ></span>
+      </div>
+    </header>
+
+    <main
+      role="main"
+      aria-labelledby="main-heading"
+    >
+      <section
+        id="metrics-section"
+        aria-label="Performance metrics"
+      >
+        <div
+          id="limitations-warning"
+          class="limitations-warning"
+          role="alert"
+          style="display: none"
+        ></div>
+
+        <div
+          id="loading-state"
+          class="loading-container"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          <div
+            class="loading-spinner"
+            aria-hidden="true"
+          ></div>
+          <span class="loading-text">Collecting metrics...</span>
+        </div>
+
+        <table
+          id="metrics-table"
+          class="metrics-table"
+          role="table"
+          aria-label="Core Web Vitals metrics"
+          style="display: none"
+        >
+          <thead>
+            <tr>
+              <th scope="col">Metric</th>
+              <th scope="col">Value</th>
+              <th scope="col">Status</th>
+            </tr>
+          </thead>
+          <tbody id="metrics-body">
+            <!-- Metrics will be populated here -->
+          </tbody>
+        </table>
+
+        <div
+          id="error-state"
+          class="error-container"
+          role="alert"
+          aria-live="assertive"
+          style="display: none"
+        >
+          <span
+            class="error-icon"
+            aria-hidden="true"
+            >⚠</span
+          >
+          <span
+            id="error-message"
+            class="error-message"
+          ></span>
+        </div>
+      </section>
+
+      <section
+        id="controls-section"
+        aria-label="Extension controls"
+      >
+        <div class="controls-grid">
+          <button
+            id="export-json-btn"
+            class="control-button primary"
+            type="button"
+            aria-describedby="export-description"
+          >
+            <span
+              class="button-icon"
+              aria-hidden="true"
+              >📋</span
+            >
+            <span class="button-text">Copy as JSON</span>
+          </button>
+
+          <button
+            id="refresh-metrics-btn"
+            class="control-button secondary"
+            type="button"
+            aria-describedby="refresh-description"
+          >
+            <span
+              class="button-icon"
+              aria-hidden="true"
+              >🔄</span
+            >
+            <span class="button-text">Refresh Data</span>
+          </button>
+
+          <button
+            id="toggle-cls-debugger"
+            class="control-button secondary"
+            type="button"
+            aria-describedby="cls-description"
+            aria-pressed="false"
+          >
+            <span
+              class="button-icon"
+              aria-hidden="true"
+              >🔍</span
+            >
+            <span
+              id="cls-debugger-status"
+              class="button-text"
+              >Highlight CLS Issues</span
+            >
+          </button>
+        </div>
+
+        <div
+          class="control-descriptions"
+          aria-hidden="true"
+        >
+          <div
+            id="export-description"
+            class="control-description"
+          >
+            Export current metrics as JSON to clipboard
+          </div>
+          <div
+            id="refresh-description"
+            class="control-description"
+          >
+            Force refresh performance metrics for current page
+          </div>
+          <div
+            id="cls-description"
+            class="control-description"
+          >
+            Toggle visual highlighting of layout shift sources
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <div
+      id="toast-container"
+      aria-live="polite"
+      aria-atomic="true"
+      class="toast-container"
+    ></div>
+
+    <!-- Screen reader only status updates -->
+    <div
+      id="sr-announcements"
+      class="sr-only"
+      aria-live="polite"
+      aria-atomic="true"
+    ></div>
   </body>
 </html>
