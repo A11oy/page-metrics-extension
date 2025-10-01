@@ -2652,11 +2652,13 @@ class URLChangeDetector {
     this.pollingInterval = null;
     this.isNavigating = false;
     this.initialPageLoad = true; // Flag to track if this is the initial page load
+    this.initialPageLoadTimeout = null; // Timeout to reset initialPageLoad flag
 
     // Configuration
     this.DEBOUNCE_DELAY = 100; // ms to wait before processing URL change
     this.POLLING_INTERVAL = 200; // ms between URL checks
     this.MIN_NAVIGATION_INTERVAL = 500; // ms minimum between navigations
+    this.INITIAL_PAGE_LOAD_TIMEOUT = 2000; // ms to wait before allowing SPA navigation detection
   }
 
   // Initialize all URL change detection methods
@@ -2665,6 +2667,33 @@ class URLChangeDetector {
     this.setupPopstateListener();
     this.setupNavigationAPIListener();
     this.startPolling();
+    
+    // Set up timeout to reset initialPageLoad flag after page load
+    this.initialPageLoadTimeout = setTimeout(() => {
+      console.log("Initial page load period ended, enabling SPA navigation detection");
+      this.initialPageLoad = false;
+    }, this.INITIAL_PAGE_LOAD_TIMEOUT);
+    
+    // Also reset the flag when the page is fully loaded (as a backup)
+    if (document.readyState === 'complete') {
+      // Page is already loaded, reset immediately
+      this.initialPageLoad = false;
+      if (this.initialPageLoadTimeout) {
+        clearTimeout(this.initialPageLoadTimeout);
+        this.initialPageLoadTimeout = null;
+      }
+    } else {
+      // Wait for page load completion as additional safety
+      window.addEventListener('load', () => {
+        if (this.initialPageLoadTimeout) {
+          clearTimeout(this.initialPageLoadTimeout);
+          this.initialPageLoadTimeout = null;
+        }
+        this.initialPageLoad = false;
+        console.log("Page load completed, SPA navigation detection enabled");
+      }, { once: true });
+    }
+    
     console.log("Enhanced URL change detection initialized");
   }
 
@@ -2753,10 +2782,9 @@ class URLChangeDetector {
     const newUrl = window.location.href;
 
     if (this.currentUrl !== newUrl) {
-      // Skip the first URL change detection (initial page load)
+      // Skip URL changes during initial page load period
       if (this.initialPageLoad) {
-        console.log(`Ignoring initial page load URL change: ${this.currentUrl} -> ${newUrl}`);
-        this.initialPageLoad = false;
+        console.log(`Ignoring URL change during initial page load period: ${this.currentUrl} -> ${newUrl}`);
         this.currentUrl = newUrl;
         return;
       }
@@ -2777,6 +2805,16 @@ class URLChangeDetector {
     }
   }
 
+  // Manually reset the initial page load flag (useful for testing or edge cases)
+  resetInitialPageLoadFlag() {
+    console.log("Manually resetting initial page load flag");
+    this.initialPageLoad = false;
+    if (this.initialPageLoadTimeout) {
+      clearTimeout(this.initialPageLoadTimeout);
+      this.initialPageLoadTimeout = null;
+    }
+  }
+
   // Cleanup method
   destroy() {
     if (this.debounceTimeout) {
@@ -2784,6 +2822,9 @@ class URLChangeDetector {
     }
     if (this.pollingInterval) {
       clearInterval(this.pollingInterval);
+    }
+    if (this.initialPageLoadTimeout) {
+      clearTimeout(this.initialPageLoadTimeout);
     }
   }
 }
