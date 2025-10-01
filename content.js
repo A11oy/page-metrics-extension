@@ -975,9 +975,11 @@ function resetAndCollectMetrics(isSpaNavigation = true) {
   // Sync CLS debugger with reset score
   syncCLSDebugger();
 
-  // Only set to SPA if this is actually an SPA navigation
+  // Set transition type based on navigation type
   if (isSpaNavigation) {
     transitionType = "spa";
+  } else {
+    transitionType = "navigation";
   }
 
   // Reset visual completion tracking with enhanced state management
@@ -3246,20 +3248,27 @@ dynamicContentHandler.init(() => {
 
 // Initial metrics collection on page load
 window.addEventListener("load", () => {
-  // Send loading state immediately
-  chrome.runtime.sendMessage({ type: "metricsLoading" });
+  // Only proceed if properly initialized and metrics haven't been collected yet
+  if (isInitialized && !metricsCollected) {
+    console.log("Starting initial metrics collection on page load...");
+    
+    // Send loading state immediately
+    chrome.runtime.sendMessage({ type: "metricsLoading" });
 
-  // Start visual completion tracking
-  startVisualCompletionTracking();
+    // Start visual completion tracking
+    startVisualCompletionTracking();
 
-  // Collect initial metrics after a short delay
-  setTimeout(() => {
-    collectMetrics();
-    // Start smart update system after initial collection
+    // Collect initial metrics after a short delay
     setTimeout(() => {
-      smartUpdateSystem.forceUpdate();
-    }, 500);
-  }, 1000);
+      collectMetrics();
+      // Start smart update system after initial collection
+      setTimeout(() => {
+        smartUpdateSystem.forceUpdate();
+      }, 500);
+    }, 1000);
+  } else {
+    console.log("Skipping initial metrics collection - already initialized or collected");
+  }
 });
 
 // Enhanced message handling for comprehensive popup-content script communication
@@ -3770,24 +3779,5 @@ if (document.readyState === "loading") {
 } else {
   restoreCLSDebuggerState();
 }
-// Start initial metrics collection if properly initialized
-if (isInitialized) {
-  console.log("Starting initial metrics collection...");
-
-  // Send loading state
-  chrome.runtime.sendMessage({ type: "metricsLoading" });
-
-  // Start metrics collection after a brief delay to allow page to settle
-  setTimeout(() => {
-    try {
-      collectMetrics();
-    } catch (error) {
-      console.error("Error in initial metrics collection:", error);
-      sendErrorToBackground("initial_collection_error", error.message);
-    }
-  }, 1000);
-} else {
-  console.log(
-    "Initial metrics collection skipped - page not supported or permissions insufficient"
-  );
-}
+// Note: Initial metrics collection is now handled by the window 'load' event listener above
+// This ensures metrics are only collected once per page load and prevents duplicates
