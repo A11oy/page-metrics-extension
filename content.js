@@ -528,7 +528,7 @@ function collectFallbackMetrics() {
         estimated: !LCPTime,
       },
       CLS: {
-        value: clsObserverInstance ? clsObserverInstance.getValue() : 0,
+        value: clsObserverInstance.getValue(),
         unit: "score",
         estimated: false,
       },
@@ -939,10 +939,8 @@ class CLSDebugger {
 // Initialize CLS debugger
 const clsDebugger = new CLSDebugger();
 
-// Connect CLS observer with debugger (only if observer is initialized)
-if (clsObserverInstance) {
-  clsObserverInstance.setDebugger(clsDebugger);
-}
+// Connect CLS observer with debugger
+clsObserverInstance.setDebugger(clsDebugger);
 
 // Function to sync CLS debugger with global CLS score
 function syncCLSDebugger() {
@@ -975,11 +973,9 @@ function resetAndCollectMetrics(isSpaNavigation = true) {
   // Sync CLS debugger with reset score
   syncCLSDebugger();
 
-  // Set transition type based on navigation type
+  // Only set to SPA if this is actually an SPA navigation
   if (isSpaNavigation) {
     transitionType = "spa";
-  } else {
-    transitionType = "navigation";
   }
 
   // Reset visual completion tracking with enhanced state management
@@ -1043,14 +1039,12 @@ function resetPerformanceObservers() {
 
 // Enhanced CLS reset for SPA navigation with proper session management
 function resetCLSForSPA() {
-  // Reset CLS observer with session boundary handling (only if initialized)
-  if (clsObserverInstance) {
-    clsObserverInstance.reset();
+  // Reset CLS observer with session boundary handling
+  clsObserverInstance.reset();
 
-    // For SPA navigation, we need to establish a new session boundary
-    // This ensures CLS measurements are accurate for the new view
-    clsObserverInstance.observe();
-  }
+  // For SPA navigation, we need to establish a new session boundary
+  // This ensures CLS measurements are accurate for the new view
+  clsObserverInstance.observe();
 
   // Reset global CLS score
   CLSScore = 0;
@@ -1265,7 +1259,7 @@ function updateMetricsWithEnhancedVisualCompletion(stabilityMetrics) {
         unit: "s",
       },
       CLS: {
-        value: clsObserverInstance ? clsObserverInstance.getValue() : 0,
+        value: clsObserverInstance.getValue(),
         unit: "score",
       },
       DOMLoadTime: {
@@ -2005,7 +1999,7 @@ class SmartMetricUpdateSystem {
             selector: lcpElementSelector,
           },
           CLS: {
-            value: clsObserverInstance ? clsObserverInstance.getValue() : 0,
+            value: clsObserverInstance.getValue(),
             unit: "score",
           },
           DOMLoadTime: {
@@ -2040,7 +2034,7 @@ class SmartMetricUpdateSystem {
           selector: lcpElementSelector,
         },
         CLS: {
-          value: clsObserverInstance ? clsObserverInstance.getValue() : 0,
+          value: clsObserverInstance.getValue(),
           unit: "score",
         },
         DOMLoadTime: {
@@ -2439,7 +2433,7 @@ function collectMetrics() {
               selector: lcpElementSelector,
             },
             CLS: {
-              value: Math.max(0, clsObserverInstance ? clsObserverInstance.getValue() : 0),
+              value: Math.max(0, clsObserverInstance.getValue()),
               unit: "score",
             },
             DOMLoadTime: {
@@ -2502,7 +2496,7 @@ function collectMetrics() {
               unit: "s",
             },
             CLS: {
-              value: clsObserverInstance ? clsObserverInstance.getValue() : 0,
+              value: clsObserverInstance.getValue(),
               unit: "score",
             },
             DOMLoadTime: {
@@ -2652,13 +2646,11 @@ class URLChangeDetector {
     this.pollingInterval = null;
     this.isNavigating = false;
     this.initialPageLoad = true; // Flag to track if this is the initial page load
-    this.initialPageLoadTimeout = null; // Timeout to reset initialPageLoad flag
 
     // Configuration
     this.DEBOUNCE_DELAY = 100; // ms to wait before processing URL change
     this.POLLING_INTERVAL = 200; // ms between URL checks
     this.MIN_NAVIGATION_INTERVAL = 500; // ms minimum between navigations
-    this.INITIAL_PAGE_LOAD_TIMEOUT = 2000; // ms to wait before allowing SPA navigation detection
   }
 
   // Initialize all URL change detection methods
@@ -2667,33 +2659,6 @@ class URLChangeDetector {
     this.setupPopstateListener();
     this.setupNavigationAPIListener();
     this.startPolling();
-    
-    // Set up timeout to reset initialPageLoad flag after page load
-    this.initialPageLoadTimeout = setTimeout(() => {
-      console.log("Initial page load period ended, enabling SPA navigation detection");
-      this.initialPageLoad = false;
-    }, this.INITIAL_PAGE_LOAD_TIMEOUT);
-    
-    // Also reset the flag when the page is fully loaded (as a backup)
-    if (document.readyState === 'complete') {
-      // Page is already loaded, reset immediately
-      this.initialPageLoad = false;
-      if (this.initialPageLoadTimeout) {
-        clearTimeout(this.initialPageLoadTimeout);
-        this.initialPageLoadTimeout = null;
-      }
-    } else {
-      // Wait for page load completion as additional safety
-      window.addEventListener('load', () => {
-        if (this.initialPageLoadTimeout) {
-          clearTimeout(this.initialPageLoadTimeout);
-          this.initialPageLoadTimeout = null;
-        }
-        this.initialPageLoad = false;
-        console.log("Page load completed, SPA navigation detection enabled");
-      }, { once: true });
-    }
-    
     console.log("Enhanced URL change detection initialized");
   }
 
@@ -2782,9 +2747,10 @@ class URLChangeDetector {
     const newUrl = window.location.href;
 
     if (this.currentUrl !== newUrl) {
-      // Skip URL changes during initial page load period
+      // Skip the first URL change detection (initial page load)
       if (this.initialPageLoad) {
-        console.log(`Ignoring URL change during initial page load period: ${this.currentUrl} -> ${newUrl}`);
+        console.log(`Ignoring initial page load URL change: ${this.currentUrl} -> ${newUrl}`);
+        this.initialPageLoad = false;
         this.currentUrl = newUrl;
         return;
       }
@@ -2805,16 +2771,6 @@ class URLChangeDetector {
     }
   }
 
-  // Manually reset the initial page load flag (useful for testing or edge cases)
-  resetInitialPageLoadFlag() {
-    console.log("Manually resetting initial page load flag");
-    this.initialPageLoad = false;
-    if (this.initialPageLoadTimeout) {
-      clearTimeout(this.initialPageLoadTimeout);
-      this.initialPageLoadTimeout = null;
-    }
-  }
-
   // Cleanup method
   destroy() {
     if (this.debounceTimeout) {
@@ -2822,9 +2778,6 @@ class URLChangeDetector {
     }
     if (this.pollingInterval) {
       clearInterval(this.pollingInterval);
-    }
-    if (this.initialPageLoadTimeout) {
-      clearTimeout(this.initialPageLoadTimeout);
     }
   }
 }
@@ -3237,7 +3190,7 @@ function initMutationObserver() {
     );
 
     if (significantChanges) {
-      urlChangeDetector.checkUrlChange();
+      urlObserver();
     }
   });
 
@@ -3289,27 +3242,20 @@ dynamicContentHandler.init(() => {
 
 // Initial metrics collection on page load
 window.addEventListener("load", () => {
-  // Only proceed if properly initialized and metrics haven't been collected yet
-  if (isInitialized && !metricsCollected) {
-    console.log("Starting initial metrics collection on page load...");
-    
-    // Send loading state immediately
-    chrome.runtime.sendMessage({ type: "metricsLoading" });
+  // Send loading state immediately
+  chrome.runtime.sendMessage({ type: "metricsLoading" });
 
-    // Start visual completion tracking
-    startVisualCompletionTracking();
+  // Start visual completion tracking
+  startVisualCompletionTracking();
 
-    // Collect initial metrics after a short delay
+  // Collect initial metrics after a short delay
+  setTimeout(() => {
+    collectMetrics();
+    // Start smart update system after initial collection
     setTimeout(() => {
-      collectMetrics();
-      // Start smart update system after initial collection
-      setTimeout(() => {
-        smartUpdateSystem.forceUpdate();
-      }, 500);
-    }, 1000);
-  } else {
-    console.log("Skipping initial metrics collection - already initialized or collected");
-  }
+      smartUpdateSystem.forceUpdate();
+    }, 500);
+  }, 1000);
 });
 
 // Enhanced message handling for comprehensive popup-content script communication
@@ -3447,11 +3393,6 @@ function validateCurrentMetrics() {
       }
     } else {
       validation.warnings.push("CLS observer not initialized");
-      validation.metrics.CLS = {
-        value: 0,
-        isValid: true,
-        source: "not_available",
-      };
     }
 
     // Validate LCP measurement
@@ -3820,5 +3761,24 @@ if (document.readyState === "loading") {
 } else {
   restoreCLSDebuggerState();
 }
-// Note: Initial metrics collection is now handled by the window 'load' event listener above
-// This ensures metrics are only collected once per page load and prevents duplicates
+// Start initial metrics collection if properly initialized
+if (isInitialized) {
+  console.log("Starting initial metrics collection...");
+
+  // Send loading state
+  chrome.runtime.sendMessage({ type: "metricsLoading" });
+
+  // Start metrics collection after a brief delay to allow page to settle
+  setTimeout(() => {
+    try {
+      collectMetrics();
+    } catch (error) {
+      console.error("Error in initial metrics collection:", error);
+      sendErrorToBackground("initial_collection_error", error.message);
+    }
+  }, 1000);
+} else {
+  console.log(
+    "Initial metrics collection skipped - page not supported or permissions insufficient"
+  );
+}
