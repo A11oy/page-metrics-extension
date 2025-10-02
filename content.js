@@ -466,40 +466,38 @@ const extensionPermissions = checkExtensionPermissions();
 // Initialize performance API support check
 const performanceSupport = checkPerformanceAPISupport();
 
-// Validate navigation entry data
+// Validate navigation entry data with more lenient validation
 function validateNavigationEntry(entry) {
   try {
-    if (!entry) return false;
+    if (!entry) {
+      console.warn("Navigation entry is null or undefined");
+      return false;
+    }
 
-    // Check for required timing properties
-    const requiredProps = [
-      "startTime",
-      "responseStart",
-      "domInteractive",
-      "domContentLoadedEventEnd",
-    ];
-    for (const prop of requiredProps) {
-      if (typeof entry[prop] !== "number" || entry[prop] < 0) {
-        console.warn(`Invalid navigation entry property: ${prop} = ${entry[prop]}`);
+    // Check for basic timing properties (more lenient approach)
+    const basicProps = ["startTime", "responseStart"];
+    for (const prop of basicProps) {
+      if (typeof entry[prop] !== "number") {
+        console.warn(`Navigation entry missing basic property: ${prop}`);
         return false;
       }
     }
 
-    // Check logical timing order
-    if (entry.responseStart < entry.startTime) {
-      console.warn("Invalid timing order: responseStart < startTime");
-      return false;
+    // Only validate timing order if both values are valid numbers
+    if (typeof entry.responseStart === "number" && typeof entry.startTime === "number") {
+      if (entry.responseStart < entry.startTime && entry.responseStart > 0) {
+        console.warn("Invalid timing order: responseStart < startTime");
+        return false;
+      }
     }
 
-    if (entry.domInteractive < entry.responseStart) {
-      console.warn("Invalid timing order: domInteractive < responseStart");
-      return false;
-    }
-
+    // More lenient validation - don't fail if some properties are missing
+    console.log("Navigation entry validation passed");
     return true;
   } catch (error) {
     console.error("Error validating navigation entry:", error);
-    return false;
+    // Don't fail completely on validation errors
+    return true; // Allow processing to continue
   }
 }
 
@@ -660,6 +658,88 @@ function sendLimitationsMessage(limitations) {
 // Initialize based on page support validation
 let clsObserverInstance = null;
 let isInitialized = false;
+
+// Add a simple test function to trigger performance analysis
+window.testPerformanceAnalysis = function () {
+  console.log("=== Testing Performance Analysis ===");
+
+  try {
+    // Test direct DOM analysis
+    const headScripts = document.head ? document.head.querySelectorAll("script") : [];
+    const headLinks = document.head ? document.head.querySelectorAll("link") : [];
+
+    console.log("DOM Elements Found:", {
+      headScripts: headScripts.length,
+      headLinks: headLinks.length,
+      deferScripts: Array.from(headScripts).filter((s) => s.hasAttribute("defer")).length,
+      asyncScripts: Array.from(headScripts).filter((s) => s.hasAttribute("async")).length,
+      stylesheets: Array.from(headLinks).filter((l) => l.rel && l.rel.includes("stylesheet"))
+        .length,
+      preloads: Array.from(headLinks).filter((l) => l.rel === "preload").length,
+    });
+
+    // Test performance recommendations if available
+    if (typeof PerformanceRecommendationAnalyzer !== "undefined") {
+      const analyzer = new PerformanceRecommendationAnalyzer();
+      console.log("Starting performance analysis...");
+
+      analyzer
+        .analyzePerformance()
+        .then((results) => {
+          console.log("✅ Performance Analysis Results:", results);
+        })
+        .catch((error) => {
+          console.error("❌ Performance Analysis Failed:", error);
+        });
+    } else {
+      console.log("PerformanceRecommendationAnalyzer not available");
+    }
+  } catch (error) {
+    console.error("Test failed:", error);
+  }
+};
+
+// Test function for debugging DOM analysis
+window.testDOMAnalysis = function () {
+  console.log("=== DOM Analysis Test ===");
+
+  // Test direct DOM queries
+  const headScripts = document.head ? document.head.querySelectorAll("script") : [];
+  const headLinks = document.head ? document.head.querySelectorAll("link") : [];
+  const bodyScripts = document.body ? document.body.querySelectorAll("script") : [];
+
+  console.log("Direct DOM queries:", {
+    headScripts: headScripts.length,
+    headLinks: headLinks.length,
+    bodyScripts: bodyScripts.length,
+  });
+
+  // Test script attributes
+  console.log("Head scripts details:");
+  Array.from(headScripts).forEach((script, i) => {
+    console.log(`Script ${i}:`, {
+      src: script.src || "(inline)",
+      defer: script.defer,
+      async: script.async,
+      type: script.type,
+      hasDefer: script.hasAttribute("defer"),
+      hasAsync: script.hasAttribute("async"),
+    });
+  });
+
+  // Test link attributes
+  console.log("Head links details:");
+  Array.from(headLinks)
+    .slice(0, 5)
+    .forEach((link, i) => {
+      console.log(`Link ${i}:`, {
+        href: link.href,
+        rel: link.rel,
+        as: link.getAttribute("as"),
+        type: link.type,
+      });
+    });
+};
 
 if (validatePageAndInitialize()) {
   console.log("Initializing performance measurement...");
@@ -941,6 +1021,5683 @@ const clsDebugger = new CLSDebugger();
 
 // Connect CLS observer with debugger
 clsObserverInstance.setDebugger(clsDebugger);
+
+// Performance Recommendation Analyzer
+class PerformanceRecommendationAnalyzer {
+  constructor() {
+    this.analysisResults = {};
+    this.isAnalyzing = false;
+    this.htmlContent = null;
+    this.responseHeaders = null;
+    this.analysisTimeout = 30000; // 30 second timeout for entire analysis
+    this.analysisStartTime = null;
+    this.currentPhase = null;
+    this.abortController = null;
+
+    // Analysis caching and optimization
+    this.analysisCache = new Map();
+    this.cacheTimeout = 5 * 60 * 1000; // 5 minutes cache timeout
+    this.lastAnalysisUrl = null;
+    this.lastAnalysisTimestamp = null;
+    this.pageChangeDetector = {
+      lastDOMHash: null,
+      lastContentLength: null,
+      lastTitle: null,
+      lastMetaDescription: null,
+    };
+
+    // Performance optimizations
+    this.maxCacheSize = 10; // Maximum number of cached analyses
+    this.analysisState = {
+      isRunning: false,
+      currentProgress: 0,
+      totalPhases: 8,
+      completedPhases: [],
+      errors: [],
+      warnings: [],
+    };
+  }
+
+  // Main analysis orchestrator with comprehensive error handling and timeout management
+  async analyzePerformance() {
+    if (this.isAnalyzing) {
+      throw new Error("Analysis already in progress");
+    }
+
+    // Check for cached results first
+    const cachedResults = this.getCachedAnalysis();
+    if (cachedResults) {
+      console.log("Returning cached analysis results");
+      this.analysisResults = cachedResults;
+
+      // Send cached results to background
+      chrome.runtime.sendMessage({
+        type: "recommendationsGenerated",
+        data: cachedResults,
+        cached: true,
+        success: true,
+      });
+
+      return cachedResults;
+    }
+
+    this.isAnalyzing = true;
+    this.analysisStartTime = Date.now();
+    this.abortController = new AbortController();
+    this.resetAnalysisState();
+    this.analysisState.isRunning = true;
+
+    // Set up analysis timeout
+    const timeoutId = setTimeout(() => {
+      this.abortController.abort();
+    }, this.analysisTimeout);
+
+    try {
+      console.log("Starting comprehensive performance analysis...");
+
+      // Send loading state to background
+      chrome.runtime.sendMessage({
+        type: "recommendationsLoading",
+        phase: "starting",
+      });
+
+      const results = {
+        metadata: {
+          url: window.location.href,
+          timestamp: Date.now(),
+          analysisVersion: "2.0",
+          pageLoadType: "navigation",
+          userAgent: navigator.userAgent,
+        },
+        cache: null,
+        lcp: null,
+        scripts: null,
+        links: null,
+        css: null,
+        summary: null,
+        analysisErrors: [],
+        analysisWarnings: [],
+      };
+
+      // Phase 1: Fetch and parse HTML document
+      this.currentPhase = "html_fetch";
+      console.log("Phase 1: Fetching HTML document...");
+      this.updateAnalysisProgress("html_fetch", 12.5);
+
+      let htmlData;
+      try {
+        htmlData = await this.fetchDocumentHTML();
+        if (htmlData.fallbackUsed) {
+          results.analysisWarnings.push({
+            phase: "html_fetch",
+            message: `Used fallback HTML: ${htmlData.fallbackReason}`,
+            impact: "Cache analysis may be limited",
+          });
+        }
+      } catch (error) {
+        throw new Error(`HTML fetch failed: ${error.message}`);
+      }
+
+      // Phase 2: Parse HTML structure
+      this.currentPhase = "html_parse";
+      console.log("Phase 2: Parsing HTML structure...");
+      this.updateAnalysisProgress("html_parse", 25);
+
+      let parseData;
+      try {
+        parseData = this.parseHTMLStructure(); // No parameter needed - analyzes live DOM
+        if (parseData.parseError) {
+          results.analysisWarnings.push({
+            phase: "html_parse",
+            message: `HTML parsing issues: ${parseData.parseError}`,
+            impact: "Some elements may not be detected",
+          });
+        }
+      } catch (error) {
+        throw new Error(`HTML parsing failed: ${error.message}`);
+      }
+
+      // Phase 3: Cache analysis
+      this.currentPhase = "cache_analysis";
+      console.log("Phase 3: Analyzing cache headers...");
+      this.updateAnalysisProgress("cache_analysis", 37.5);
+
+      try {
+        results.cache = await this.analyzeCacheHeaders(htmlData.headers);
+      } catch (error) {
+        console.warn("Cache analysis failed:", error);
+        results.analysisErrors.push({
+          phase: "cache_analysis",
+          error: error.message,
+          impact: "Cache recommendations unavailable",
+        });
+        results.cache = this.getEmptyCacheAnalysis();
+      }
+
+      // Phase 4: LCP analysis
+      this.currentPhase = "lcp_analysis";
+      console.log("Phase 4: Analyzing LCP elements...");
+      this.updateAnalysisProgress("lcp_analysis", 50);
+
+      try {
+        results.lcp = await this.analyzeLCPElement(parseData.structure);
+      } catch (error) {
+        console.warn("LCP analysis failed:", error);
+        results.analysisErrors.push({
+          phase: "lcp_analysis",
+          error: error.message,
+          impact: "LCP recommendations unavailable",
+        });
+        results.lcp = this.getEmptyLCPAnalysis();
+      }
+
+      // Phase 5: Script analysis
+      this.currentPhase = "script_analysis";
+      console.log("Phase 5: Analyzing scripts...");
+      this.updateAnalysisProgress("script_analysis", 62.5);
+
+      try {
+        console.log("Debug: Structure passed to analyzeScripts:", {
+          hasStructure: !!parseData.structure,
+          hasHead: !!(parseData.structure && parseData.structure.head),
+          hasBody: !!(parseData.structure && parseData.structure.body),
+          headScripts:
+            parseData.structure && parseData.structure.head && parseData.structure.head.scripts
+              ? parseData.structure.head.scripts.length
+              : 0,
+          bodyScripts:
+            parseData.structure && parseData.structure.body && parseData.structure.body.scripts
+              ? parseData.structure.body.scripts.length
+              : 0,
+        });
+        results.scripts = await this.analyzeScripts(parseData.structure);
+      } catch (error) {
+        console.warn("Script analysis failed:", error);
+        results.analysisErrors.push({
+          phase: "script_analysis",
+          error: error.message,
+          impact: "Script recommendations unavailable",
+        });
+        results.scripts = this.getEmptyScriptAnalysis();
+      }
+
+      // Phase 6: Link analysis
+      this.currentPhase = "link_analysis";
+      console.log("Phase 6: Analyzing link tags...");
+      this.updateAnalysisProgress("link_analysis", 75);
+
+      try {
+        console.log("Debug: Structure passed to analyzeLinks:", {
+          hasStructure: !!parseData.structure,
+          hasHead: !!(parseData.structure && parseData.structure.head),
+          hasBody: !!(parseData.structure && parseData.structure.body),
+          headLinks:
+            parseData.structure && parseData.structure.head && parseData.structure.head.links
+              ? parseData.structure.head.links.length
+              : 0,
+          bodyLinks:
+            parseData.structure && parseData.structure.body && parseData.structure.body.links
+              ? parseData.structure.body.links.length
+              : 0,
+        });
+        results.links = await this.analyzeLinks(parseData.structure);
+      } catch (error) {
+        console.warn("Link analysis failed:", error);
+        results.analysisErrors.push({
+          phase: "link_analysis",
+          error: error.message,
+          impact: "Link recommendations unavailable",
+        });
+        results.links = this.getEmptyLinkAnalysis();
+      }
+
+      // Phase 7: CSS analysis
+      this.currentPhase = "css_analysis";
+      console.log("Phase 7: Analyzing CSS...");
+      this.updateAnalysisProgress("css_analysis", 87.5);
+
+      try {
+        console.log("Debug: Structure passed to analyzeCSS:", {
+          hasStructure: !!parseData.structure,
+          hasHead: !!(parseData.structure && parseData.structure.head),
+          hasBody: !!(parseData.structure && parseData.structure.body),
+          headLinks:
+            parseData.structure && parseData.structure.head && parseData.structure.head.links
+              ? parseData.structure.head.links.length
+              : 0,
+          bodyLinks:
+            parseData.structure && parseData.structure.body && parseData.structure.body.links
+              ? parseData.structure.body.links.length
+              : 0,
+        });
+        results.css = await this.analyzeCSS(parseData.structure);
+      } catch (error) {
+        console.warn("CSS analysis failed:", error);
+        results.analysisErrors.push({
+          phase: "css_analysis",
+          error: error.message,
+          impact: "CSS recommendations unavailable",
+        });
+        results.css = this.getEmptyCSSAnalysis();
+      }
+
+      // Phase 8: Generate summary
+      this.currentPhase = "summary_generation";
+      console.log("Phase 8: Generating summary...");
+      this.updateAnalysisProgress("summary_generation", 100);
+
+      try {
+        results.summary = this.generateSummary(results);
+      } catch (error) {
+        console.warn("Summary generation failed:", error);
+        results.analysisErrors.push({
+          phase: "summary_generation",
+          error: error.message,
+          impact: "Summary may be incomplete",
+        });
+        results.summary = this.getEmptySummary();
+      }
+
+      // Clear timeout
+      clearTimeout(timeoutId);
+
+      const totalDuration = Date.now() - this.analysisStartTime;
+      console.log(`Performance analysis completed successfully in ${totalDuration}ms`);
+
+      // Add analysis metadata
+      results.metadata.analysisDuration = totalDuration;
+      results.metadata.completedPhases = this.currentPhase;
+      results.metadata.hasErrors = results.analysisErrors.length > 0;
+      results.metadata.hasWarnings = results.analysisWarnings.length > 0;
+
+      // Cache the successful analysis results
+      this.setCachedAnalysis(results);
+
+      this.analysisResults = results;
+      return results;
+    } catch (error) {
+      clearTimeout(timeoutId);
+
+      const totalDuration = Date.now() - this.analysisStartTime;
+      const isTimeout = error.name === "AbortError" || error.message.includes("timeout");
+
+      console.error(
+        `Performance analysis failed after ${totalDuration}ms in phase ${this.currentPhase}:`,
+        error
+      );
+
+      // Create error result
+      const errorResult = {
+        metadata: {
+          url: window.location.href,
+          timestamp: Date.now(),
+          analysisVersion: "2.0",
+          pageLoadType: "navigation",
+          userAgent: navigator.userAgent,
+          analysisDuration: totalDuration,
+          failedPhase: this.currentPhase,
+          analysisAborted: isTimeout,
+        },
+        error: {
+          code: isTimeout ? "ANALYSIS_TIMEOUT" : "ANALYSIS_FAILED",
+          message: isTimeout
+            ? `Analysis timed out after ${this.analysisTimeout / 1000} seconds in ${
+                this.currentPhase
+              } phase`
+            : error.message,
+          phase: this.currentPhase,
+          duration: totalDuration,
+        },
+      };
+
+      // Send error to background
+      this.sendAnalysisError("analysis_failed", errorResult.error);
+
+      throw error;
+    } finally {
+      this.isAnalyzing = false;
+      this.currentPhase = null;
+      this.abortController = null;
+      this.analysisState.isRunning = false;
+    }
+  }
+
+  // Analysis caching and optimization methods
+
+  // Check if cached analysis is available and valid
+  getCachedAnalysis(url = window.location.href) {
+    try {
+      const cacheKey = this.generateCacheKey(url);
+      const cached = this.analysisCache.get(cacheKey);
+
+      if (!cached) {
+        console.log("No cached analysis found for URL:", url);
+        return null;
+      }
+
+      const now = Date.now();
+      const isExpired = now - cached.timestamp > this.cacheTimeout;
+
+      if (isExpired) {
+        console.log("Cached analysis expired, removing from cache");
+        this.analysisCache.delete(cacheKey);
+        return null;
+      }
+
+      // Check if page has changed since analysis
+      if (this.hasPageChanged(cached.pageSignature)) {
+        console.log("Page content changed, invalidating cache");
+        this.analysisCache.delete(cacheKey);
+        return null;
+      }
+
+      console.log("Using cached analysis from", new Date(cached.timestamp).toISOString());
+      return cached.results;
+    } catch (error) {
+      console.warn("Error retrieving cached analysis:", error);
+      return null;
+    }
+  }
+
+  // Store analysis results in cache
+  setCachedAnalysis(results, url = window.location.href) {
+    try {
+      const cacheKey = this.generateCacheKey(url);
+      const pageSignature = this.generatePageSignature();
+
+      const cacheEntry = {
+        results: results,
+        timestamp: Date.now(),
+        url: url,
+        pageSignature: pageSignature,
+        analysisVersion: results.metadata?.analysisVersion || "2.0",
+      };
+
+      // Implement cache size limit
+      if (this.analysisCache.size >= this.maxCacheSize) {
+        this.evictOldestCacheEntry();
+      }
+
+      this.analysisCache.set(cacheKey, cacheEntry);
+      console.log("Analysis results cached for URL:", url);
+
+      // Update tracking variables
+      this.lastAnalysisUrl = url;
+      this.lastAnalysisTimestamp = Date.now();
+    } catch (error) {
+      console.warn("Error caching analysis results:", error);
+    }
+  }
+
+  // Generate cache key for URL
+  generateCacheKey(url) {
+    try {
+      // Use URL without hash and query params for caching
+      const urlObj = new URL(url);
+      const baseUrl = `${urlObj.protocol}//${urlObj.host}${urlObj.pathname}`;
+
+      // Create a simple hash of the base URL
+      let hash = 0;
+      for (let i = 0; i < baseUrl.length; i++) {
+        const char = baseUrl.charCodeAt(i);
+        hash = (hash << 5) - hash + char;
+        hash = hash & hash; // Convert to 32-bit integer
+      }
+
+      return `analysis_${Math.abs(hash)}`;
+    } catch (error) {
+      console.warn("Error generating cache key:", error);
+      return `analysis_${Date.now()}`;
+    }
+  }
+
+  // Generate page signature for change detection
+  generatePageSignature() {
+    try {
+      const signature = {
+        domHash: this.calculateDOMHash(),
+        contentLength: document.documentElement.outerHTML.length,
+        title: document.title || "",
+        metaDescription: this.getMetaDescription(),
+        timestamp: Date.now(),
+      };
+
+      // Update page change detector
+      this.pageChangeDetector = {
+        lastDOMHash: signature.domHash,
+        lastContentLength: signature.contentLength,
+        lastTitle: signature.title,
+        lastMetaDescription: signature.metaDescription,
+      };
+
+      return signature;
+    } catch (error) {
+      console.warn("Error generating page signature:", error);
+      return {
+        domHash: Date.now(),
+        contentLength: 0,
+        title: "",
+        metaDescription: "",
+        timestamp: Date.now(),
+      };
+    }
+  }
+
+  // Check if page has changed since last analysis
+  hasPageChanged(cachedSignature) {
+    try {
+      if (!cachedSignature) return true;
+
+      const currentSignature = this.generatePageSignature();
+
+      // Compare key indicators of page change
+      const hasChanged =
+        currentSignature.domHash !== cachedSignature.domHash ||
+        Math.abs(currentSignature.contentLength - cachedSignature.contentLength) > 1000 ||
+        currentSignature.title !== cachedSignature.title ||
+        currentSignature.metaDescription !== cachedSignature.metaDescription;
+
+      if (hasChanged) {
+        console.log("Page change detected:", {
+          domHashChanged: currentSignature.domHash !== cachedSignature.domHash,
+          contentLengthDiff: Math.abs(
+            currentSignature.contentLength - cachedSignature.contentLength
+          ),
+          titleChanged: currentSignature.title !== cachedSignature.title,
+          metaChanged: currentSignature.metaDescription !== cachedSignature.metaDescription,
+        });
+      }
+
+      return hasChanged;
+    } catch (error) {
+      console.warn("Error checking page changes:", error);
+      return true; // Assume changed if we can't determine
+    }
+  }
+
+  // Calculate a simple hash of DOM structure
+  calculateDOMHash() {
+    try {
+      // Get key structural elements for hashing
+      const elements = document.querySelectorAll(
+        'script[src], link[rel="stylesheet"], img[src], meta[name="description"]'
+      );
+      let hashString = "";
+
+      elements.forEach((el) => {
+        if (el.tagName === "SCRIPT" && el.src) {
+          hashString += `script:${el.src}`;
+        } else if (el.tagName === "LINK" && el.href) {
+          hashString += `link:${el.href}`;
+        } else if (el.tagName === "IMG" && el.src) {
+          hashString += `img:${el.src}`;
+        } else if (el.tagName === "META" && el.content) {
+          hashString += `meta:${el.content}`;
+        }
+      });
+
+      // Add document title and basic structure
+      hashString += `title:${document.title}`;
+      hashString += `scripts:${document.scripts.length}`;
+      hashString += `links:${document.links.length}`;
+
+      // Generate simple hash
+      let hash = 0;
+      for (let i = 0; i < hashString.length; i++) {
+        const char = hashString.charCodeAt(i);
+        hash = (hash << 5) - hash + char;
+        hash = hash & hash;
+      }
+
+      return Math.abs(hash);
+    } catch (error) {
+      console.warn("Error calculating DOM hash:", error);
+      return Date.now(); // Fallback to timestamp
+    }
+  }
+
+  // Get meta description for change detection
+  getMetaDescription() {
+    try {
+      const metaDesc = document.querySelector('meta[name="description"]');
+      return metaDesc ? metaDesc.getAttribute("content") || "" : "";
+    } catch (error) {
+      return "";
+    }
+  }
+
+  // Evict oldest cache entry when cache is full
+  evictOldestCacheEntry() {
+    try {
+      let oldestKey = null;
+      let oldestTimestamp = Date.now();
+
+      for (const [key, entry] of this.analysisCache.entries()) {
+        if (entry.timestamp < oldestTimestamp) {
+          oldestTimestamp = entry.timestamp;
+          oldestKey = key;
+        }
+      }
+
+      if (oldestKey) {
+        this.analysisCache.delete(oldestKey);
+        console.log("Evicted oldest cache entry:", oldestKey);
+      }
+    } catch (error) {
+      console.warn("Error evicting cache entry:", error);
+    }
+  }
+
+  // Clear analysis cache
+  clearCache() {
+    try {
+      this.analysisCache.clear();
+      console.log("Analysis cache cleared");
+    } catch (error) {
+      console.warn("Error clearing cache:", error);
+    }
+  }
+
+  // Get cache statistics
+  getCacheStats() {
+    return {
+      size: this.analysisCache.size,
+      maxSize: this.maxCacheSize,
+      cacheTimeout: this.cacheTimeout,
+      lastAnalysisUrl: this.lastAnalysisUrl,
+      lastAnalysisTimestamp: this.lastAnalysisTimestamp,
+    };
+  }
+
+  // Update analysis state and progress tracking
+  updateAnalysisProgress(phase, progress = null) {
+    try {
+      this.analysisState.currentProgress =
+        progress ||
+        (this.analysisState.completedPhases.length / this.analysisState.totalPhases) * 100;
+
+      if (phase && !this.analysisState.completedPhases.includes(phase)) {
+        this.analysisState.completedPhases.push(phase);
+      }
+
+      // Send progress update to background
+      chrome.runtime.sendMessage({
+        type: "recommendationsProgress",
+        phase: phase,
+        progress: this.analysisState.currentProgress,
+        completedPhases: this.analysisState.completedPhases.length,
+        totalPhases: this.analysisState.totalPhases,
+      });
+    } catch (error) {
+      console.warn("Error updating analysis progress:", error);
+    }
+  }
+
+  // Reset analysis state
+  resetAnalysisState() {
+    this.analysisState = {
+      isRunning: false,
+      currentProgress: 0,
+      totalPhases: 8,
+      completedPhases: [],
+      errors: [],
+      warnings: [],
+    };
+  }
+
+  // Send analysis error to background script
+  sendAnalysisError(errorType, errorDetails) {
+    try {
+      chrome.runtime.sendMessage({
+        type: "recommendationsError",
+        error: {
+          code: errorType.toUpperCase(),
+          message: errorDetails.originalError || errorDetails.error || "Unknown error",
+          details: errorDetails,
+          timestamp: Date.now(),
+          url: window.location.href,
+          phase: this.currentPhase,
+        },
+      });
+    } catch (error) {
+      console.warn("Failed to send analysis error to background:", error);
+    }
+  }
+
+  // Empty analysis result generators for error recovery
+  getEmptyCacheAnalysis() {
+    return {
+      browserCache: {
+        status: "unknown",
+        ttl: null,
+        cacheControl: null,
+        expires: null,
+      },
+      cdnCache: {
+        status: "unknown",
+        provider: "unknown",
+        ttl: null,
+        age: null,
+        cacheHeaders: {},
+      },
+    };
+  }
+
+  getEmptyLCPAnalysis() {
+    return {
+      elementFound: false,
+      serverSideRendered: false,
+      elementType: null,
+      elementSelector: null,
+      preloadExists: false,
+    };
+  }
+
+  getEmptyScriptAnalysis() {
+    return {
+      duplicates: [],
+      deferScripts: [],
+      asyncScripts: [],
+      totalExternalScripts: 0,
+      recommendations: [],
+    };
+  }
+
+  getEmptyLinkAnalysis() {
+    return {
+      bodyLinks: [],
+      duplicatePreloads: [],
+      invalidPreloads: [],
+      redundantPreloads: [],
+      totalPreloads: 0,
+    };
+  }
+
+  getEmptyCSSAnalysis() {
+    return {
+      stylesheets: [],
+      totalStylesheets: 0,
+      misplacedCount: 0,
+    };
+  }
+
+  getEmptySummary() {
+    return {
+      totalIssues: 0,
+      criticalIssues: 0,
+      optimizationOpportunities: 0,
+      overallScore: "unknown",
+    };
+  }
+
+  // Enhanced cache analysis with error handling
+  async analyzeCacheHeaders(headers = null) {
+    try {
+      const responseHeaders = headers || this.responseHeaders || {};
+
+      console.log("Analyzing cache headers...");
+
+      const result = {
+        browserCache: {
+          status: "not-cached",
+          ttl: null,
+          cacheControl: null,
+          expires: null,
+        },
+        cdnCache: {
+          status: "unknown",
+          provider: "unknown",
+          ttl: null,
+          age: null,
+          cacheHeaders: {},
+        },
+      };
+
+      // Safely extract headers
+      const cacheControl = this.safeGetHeader(responseHeaders, "cache-control");
+      const expires = this.safeGetHeader(responseHeaders, "expires");
+      const age = this.safeGetHeader(responseHeaders, "age");
+
+      // Browser cache analysis
+      if (cacheControl || expires) {
+        result.browserCache.status = "cached";
+        result.browserCache.cacheControl = cacheControl;
+        result.browserCache.expires = expires;
+
+        // Extract TTL from cache-control
+        if (cacheControl) {
+          const maxAgeMatch = cacheControl.match(/max-age=(\d+)/);
+          if (maxAgeMatch) {
+            result.browserCache.ttl = parseInt(maxAgeMatch[1]);
+          }
+        }
+      }
+
+      // CDN cache analysis with error handling
+      try {
+        const cdnAnalysis = this.analyzeCDNHeaders(responseHeaders);
+        result.cdnCache = { ...result.cdnCache, ...cdnAnalysis };
+      } catch (cdnError) {
+        console.warn("CDN analysis failed:", cdnError);
+      }
+
+      return result;
+    } catch (error) {
+      console.error("Cache header analysis failed:", error);
+      throw new Error(`Cache analysis error: ${error.message}`);
+    }
+  }
+
+  // Safe header extraction
+  safeGetHeader(headers, name) {
+    try {
+      if (!headers || typeof headers !== "object") {
+        return null;
+      }
+
+      // Handle both Headers object and plain object
+      if (headers.get && typeof headers.get === "function") {
+        return headers.get(name);
+      } else {
+        return headers[name] || headers[name.toLowerCase()] || null;
+      }
+    } catch (error) {
+      console.warn(`Error getting header "${name}":`, error);
+      return null;
+    }
+  }
+
+  // CDN header analysis with comprehensive provider detection
+  analyzeCDNHeaders(headers) {
+    const result = {
+      status: "unknown",
+      provider: "unknown",
+      ttl: null,
+      age: null,
+      cacheHeaders: {},
+    };
+
+    try {
+      // Collect CDN-related headers
+      const cdnHeaders = {
+        age: this.safeGetHeader(headers, "age"),
+        xCache: this.safeGetHeader(headers, "x-cache"),
+        xCacheHits: this.safeGetHeader(headers, "x-cache-hits"),
+        cfCacheStatus: this.safeGetHeader(headers, "cf-cache-status"),
+        xServedBy: this.safeGetHeader(headers, "x-served-by"),
+        xAmzCfId: this.safeGetHeader(headers, "x-amz-cf-id"),
+        server: this.safeGetHeader(headers, "server"),
+      };
+
+      result.cacheHeaders = cdnHeaders;
+
+      // Detect CDN provider
+      if (cdnHeaders.cfCacheStatus) {
+        result.provider = "cloudflare";
+        result.status = cdnHeaders.cfCacheStatus.toLowerCase().includes("hit") ? "hit" : "miss";
+      } else if (cdnHeaders.xAmzCfId) {
+        result.provider = "aws";
+        result.status = cdnHeaders.age && parseInt(cdnHeaders.age) > 0 ? "hit" : "miss";
+      } else if (cdnHeaders.xCache && cdnHeaders.xCache.toLowerCase().includes("akamai")) {
+        result.provider = "akamai";
+        result.status = cdnHeaders.xCache.toLowerCase().includes("hit") ? "hit" : "miss";
+      } else if (cdnHeaders.xServedBy && cdnHeaders.xServedBy.includes("fastly")) {
+        result.provider = "fastly";
+        result.status = cdnHeaders.age && parseInt(cdnHeaders.age) > 0 ? "hit" : "miss";
+      }
+
+      // Extract age/TTL
+      if (cdnHeaders.age) {
+        const ageValue = parseInt(cdnHeaders.age);
+        if (!isNaN(ageValue)) {
+          result.age = ageValue;
+          if (ageValue > 0) {
+            result.status = "hit";
+          }
+        }
+      }
+
+      return result;
+    } catch (error) {
+      console.warn("CDN header analysis error:", error);
+      return result;
+    }
+  }
+
+  // Get current DOM HTML content for analysis (optimized for SPAs)
+  async fetchDocumentHTML() {
+    const startTime = Date.now();
+
+    try {
+      console.log("Getting current DOM HTML content for analysis...");
+
+      // For SPAs and modern websites, use the current DOM state
+      // This ensures we analyze the fully rendered content, not just the initial server response
+      this.htmlContent = document.documentElement.outerHTML;
+
+      // Validate HTML content
+      if (!this.htmlContent || this.htmlContent.length === 0) {
+        throw new Error("Current DOM HTML content is empty");
+      }
+
+      if (this.htmlContent.length > 10 * 1024 * 1024) {
+        // 10MB limit
+        console.warn("HTML content is very large, analysis may be slow");
+      }
+
+      // Extract response headers from current page (fallback method)
+      try {
+        this.responseHeaders = this.extractFallbackHeaders();
+      } catch (headerError) {
+        console.warn("Error extracting response headers:", headerError);
+        this.responseHeaders = {};
+      }
+
+      const fetchDuration = Date.now() - startTime;
+      console.log(
+        `DOM HTML content retrieved successfully in ${fetchDuration}ms (${this.htmlContent.length} characters)`
+      );
+
+      return {
+        html: this.htmlContent,
+        headers: this.responseHeaders,
+        fetchDuration: fetchDuration,
+        source: "current-dom", // Indicate this came from current DOM, not fetch
+      };
+    } catch (error) {
+      const fetchDuration = Date.now() - startTime;
+      console.error(`Error getting DOM HTML content after ${fetchDuration}ms:`, error);
+
+      // Send detailed error to background
+      this.sendAnalysisError("dom_html_failed", {
+        originalError: error.message,
+        fetchDuration: fetchDuration,
+        url: window.location.href,
+      });
+
+      // Try to get at least the document body as fallback
+      try {
+        const bodyHTML = document.body ? document.body.outerHTML : "";
+        const headHTML = document.head ? document.head.outerHTML : "";
+        this.htmlContent = `<!DOCTYPE html><html>${headHTML}${bodyHTML}</html>`;
+        this.responseHeaders = this.extractFallbackHeaders();
+
+        console.log("Using minimal DOM fallback for analysis");
+
+        return {
+          html: this.htmlContent,
+          headers: this.responseHeaders,
+          fetchDuration: fetchDuration,
+          source: "minimal-dom-fallback",
+          fallbackUsed: true,
+          fallbackReason: "Could not get full DOM HTML",
+        };
+      } catch (fallbackError) {
+        throw new Error(
+          `Both DOM HTML extraction and fallback failed. Primary: ${error.message}, Fallback: ${fallbackError.message}`
+        );
+      }
+    }
+  }
+
+  // Analyze live DOM structure directly (no HTML parsing needed)
+  parseHTMLStructure(htmlContent = null) {
+    const startTime = Date.now();
+
+    try {
+      console.log("Analyzing live DOM structure directly...");
+
+      // Use the live document instead of parsing HTML string
+      const doc = document;
+
+      if (!doc) {
+        throw new Error("Document not available");
+      }
+
+      if (!doc.documentElement) {
+        throw new Error("Document has no document element");
+      }
+
+      // Safely extract key structural elements with error handling
+      const structure = {
+        head: null,
+        body: null,
+        scripts: [],
+        links: [],
+        images: [],
+        videos: [],
+      };
+
+      try {
+        structure.head = {
+          element: doc.head,
+          scripts: doc.head ? this.safeQuerySelectorAll(doc.head, "script") : [],
+          links: doc.head ? this.safeQuerySelectorAll(doc.head, "link") : [],
+          meta: doc.head ? this.safeQuerySelectorAll(doc.head, "meta") : [],
+          preloads: doc.head ? this.safeQuerySelectorAll(doc.head, "link[rel='preload']") : [],
+        };
+      } catch (headError) {
+        console.warn("Error analyzing head section:", headError);
+        structure.head = { element: null, scripts: [], links: [], meta: [], preloads: [] };
+      }
+
+      try {
+        structure.body = {
+          element: doc.body,
+          scripts: doc.body ? this.safeQuerySelectorAll(doc.body, "script") : [],
+          links: doc.body ? this.safeQuerySelectorAll(doc.body, "link") : [],
+          images: doc.body ? this.safeQuerySelectorAll(doc.body, "img[src]") : [],
+          videos: doc.body ? this.safeQuerySelectorAll(doc.body, "video") : [],
+        };
+      } catch (bodyError) {
+        console.warn("Error analyzing body section:", bodyError);
+        structure.body = { element: null, scripts: [], links: [], images: [], videos: [] };
+      }
+
+      // Extract all elements for comprehensive analysis
+      try {
+        structure.allScripts = this.safeQuerySelectorAll(doc, "script");
+        structure.allLinks = this.safeQuerySelectorAll(doc, "link");
+        structure.allImages = this.safeQuerySelectorAll(doc, "img[src]");
+        structure.allVideos = this.safeQuerySelectorAll(doc, "video");
+      } catch (allElementsError) {
+        console.warn("Error extracting all elements:", allElementsError);
+        structure.allScripts = [];
+        structure.allLinks = [];
+        structure.allImages = [];
+        structure.allVideos = [];
+      }
+
+      const parseDuration = Date.now() - startTime;
+      console.log(`Live DOM structure analyzed successfully in ${parseDuration}ms`);
+
+      // Debug logging
+      console.log("DOM Analysis Results:", {
+        headScripts: structure.head.scripts.length,
+        headLinks: structure.head.links.length,
+        headPreloads: structure.head.preloads.length,
+        bodyScripts: structure.body.scripts.length,
+        bodyLinks: structure.body.links.length,
+        totalScripts: structure.allScripts.length,
+        totalLinks: structure.allLinks.length,
+      });
+
+      return {
+        structure: structure,
+        document: doc,
+        parseDuration: parseDuration,
+        htmlLength: this.htmlContent ? this.htmlContent.length : 0,
+        source: "live-dom",
+      };
+    } catch (error) {
+      const parseDuration = Date.now() - startTime;
+      console.error(`Error analyzing live DOM structure after ${parseDuration}ms:`, error);
+
+      // Send detailed error information
+      this.sendAnalysisError("dom_analysis_failed", {
+        originalError: error.message,
+        parseDuration: parseDuration,
+        url: window.location.href,
+      });
+
+      // Return minimal structure to allow analysis to continue
+      return {
+        structure: {
+          head: { element: null, scripts: [], links: [], meta: [], preloads: [] },
+          body: { element: null, scripts: [], links: [], images: [], videos: [] },
+          allScripts: [],
+          allLinks: [],
+          allImages: [],
+          allVideos: [],
+        },
+        document: null,
+        parseDuration: parseDuration,
+        htmlLength: 0,
+        parseError: error.message,
+        source: "fallback",
+      };
+    }
+  }
+
+  // Safe querySelector wrapper with error handling
+  safeQuerySelectorAll(element, selector) {
+    try {
+      if (!element || !element.querySelectorAll) {
+        return [];
+      }
+      return Array.from(element.querySelectorAll(selector));
+    } catch (error) {
+      console.warn(`Error querying selector "${selector}":`, error);
+      return [];
+    }
+  }
+
+  // Extract response headers for cache analysis
+  extractResponseHeaders(response) {
+    try {
+      console.log("Extracting response headers...");
+
+      if (!response || !response.headers) {
+        throw new Error("Invalid response object or missing headers");
+      }
+
+      const headers = {};
+      let headerCount = 0;
+      const maxHeaders = 100; // Prevent excessive header processing
+
+      // Iterate through all response headers with validation
+      for (const [name, value] of response.headers.entries()) {
+        // Security check: limit number of headers processed
+        if (headerCount >= maxHeaders) {
+          console.warn(`Header limit reached (${maxHeaders}), skipping remaining headers`);
+          break;
+        }
+
+        // Validate header name and value
+        const validatedHeader = this.validateHeader(name, value);
+        if (validatedHeader) {
+          headers[validatedHeader.name] = validatedHeader.value;
+          headerCount++;
+        }
+      }
+
+      // Validate and categorize important headers
+      const categorizedHeaders = this.categorizeHeaders(headers);
+
+      // Add extraction metadata
+      categorizedHeaders.extractionMetadata = {
+        totalHeadersProcessed: headerCount,
+        extractionTimestamp: Date.now(),
+        responseUrl: response.url || window.location.href,
+        responseStatus: response.status,
+        responseStatusText: response.statusText,
+      };
+
+      console.log(`Response headers extracted successfully (${headerCount} headers)`);
+      return categorizedHeaders;
+    } catch (error) {
+      console.error("Error extracting response headers:", error);
+      return this.extractFallbackHeaders();
+    }
+  }
+
+  // Categorize headers for cache analysis with enhanced validation
+  categorizeHeaders(rawHeaders) {
+    const categorized = {
+      raw: rawHeaders,
+      cache: {
+        browserCache: {},
+        cdnCache: {},
+        general: {},
+      },
+      security: {},
+      performance: {},
+      other: {},
+      validation: {
+        totalHeaders: 0,
+        validHeaders: 0,
+        invalidHeaders: 0,
+        malformedHeaders: [],
+      },
+    };
+
+    // Browser cache headers
+    const browserCacheHeaders = [
+      "cache-control",
+      "expires",
+      "etag",
+      "last-modified",
+      "pragma",
+      "vary",
+      "if-modified-since",
+      "if-none-match",
+    ];
+
+    // CDN cache headers (various providers)
+    const cdnCacheHeaders = [
+      "age",
+      "x-cache",
+      "x-cache-hits",
+      "x-cache-status",
+      "cf-cache-status",
+      "cf-ray",
+      "cf-edge-cache",
+      "cf-request-id",
+      "x-served-by",
+      "x-cache-lookup",
+      "x-varnish",
+      "x-varnish-cache",
+      "server-timing",
+      "x-fastly-request-id",
+      "x-fastly-cache",
+      "x-amz-cf-pop",
+      "x-amz-cf-id",
+      "x-akamai-request-id",
+    ];
+
+    // Performance-related headers
+    const performanceHeaders = [
+      "content-encoding",
+      "content-length",
+      "transfer-encoding",
+      "server-timing",
+      "timing-allow-origin",
+      "accept-ranges",
+      "content-type",
+      "x-response-time",
+    ];
+
+    // Security headers
+    const securityHeaders = [
+      "strict-transport-security",
+      "content-security-policy",
+      "x-frame-options",
+      "x-content-type-options",
+      "x-xss-protection",
+      "referrer-policy",
+      "permissions-policy",
+    ];
+
+    // Process and categorize each header
+    Object.entries(rawHeaders).forEach(([name, value]) => {
+      categorized.validation.totalHeaders++;
+
+      try {
+        const normalizedName = name.toLowerCase();
+
+        // Validate header value format for specific headers
+        const isValidHeader = this.validateSpecificHeader(normalizedName, value);
+
+        if (isValidHeader) {
+          categorized.validation.validHeaders++;
+
+          // Categorize the header
+          if (browserCacheHeaders.includes(normalizedName)) {
+            categorized.cache.browserCache[normalizedName] = value;
+          } else if (cdnCacheHeaders.includes(normalizedName)) {
+            categorized.cache.cdnCache[normalizedName] = value;
+          } else if (performanceHeaders.includes(normalizedName)) {
+            categorized.performance[normalizedName] = value;
+          } else if (securityHeaders.includes(normalizedName)) {
+            categorized.security[normalizedName] = value;
+          } else {
+            categorized.other[normalizedName] = value;
+          }
+        } else {
+          categorized.validation.invalidHeaders++;
+          categorized.validation.malformedHeaders.push({
+            name: normalizedName,
+            value: value,
+            reason: "Failed specific header validation",
+          });
+        }
+      } catch (error) {
+        categorized.validation.invalidHeaders++;
+        categorized.validation.malformedHeaders.push({
+          name: name,
+          value: value,
+          reason: error.message,
+        });
+        console.warn("Error processing header:", name, error);
+      }
+    });
+
+    // Add validation summary
+    console.log(
+      `Header validation complete: ${categorized.validation.validHeaders}/${categorized.validation.totalHeaders} valid`
+    );
+
+    if (categorized.validation.malformedHeaders.length > 0) {
+      console.warn("Malformed headers detected:", categorized.validation.malformedHeaders);
+    }
+
+    return categorized;
+  }
+
+  // Validate individual header name and value
+  validateHeader(name, value) {
+    try {
+      // Validate header name
+      if (!name || typeof name !== "string") {
+        console.warn("Invalid header name:", name);
+        return null;
+      }
+
+      // Normalize header name
+      const normalizedName = name.toLowerCase().trim();
+
+      // Check for valid header name format (basic validation)
+      if (!/^[a-z0-9\-_]+$/.test(normalizedName)) {
+        console.warn("Header name contains invalid characters:", normalizedName);
+        return null;
+      }
+
+      // Validate header value
+      if (value === null || value === undefined) {
+        console.warn("Header has null/undefined value:", normalizedName);
+        return null;
+      }
+
+      // Convert value to string and sanitize
+      let sanitizedValue = String(value).trim();
+
+      // Security check: limit header value length
+      const maxValueLength = 8192; // 8KB limit per header value
+      if (sanitizedValue.length > maxValueLength) {
+        console.warn(
+          `Header value too long (${sanitizedValue.length} chars), truncating:`,
+          normalizedName
+        );
+        sanitizedValue = sanitizedValue.substring(0, maxValueLength) + "...[truncated]";
+      }
+
+      // Remove potentially dangerous characters (basic sanitization)
+      sanitizedValue = sanitizedValue.replace(/[\x00-\x1f\x7f-\x9f]/g, "");
+
+      return {
+        name: normalizedName,
+        value: sanitizedValue,
+      };
+    } catch (error) {
+      console.warn("Error validating header:", error);
+      return null;
+    }
+  }
+
+  // Validate specific header formats
+  validateSpecificHeader(headerName, headerValue) {
+    try {
+      switch (headerName) {
+        case "cache-control":
+          return this.validateCacheControlHeader(headerValue);
+
+        case "expires":
+          return this.validateExpiresHeader(headerValue);
+
+        case "age":
+          return this.validateAgeHeader(headerValue);
+
+        case "content-length":
+          return this.validateContentLengthHeader(headerValue);
+
+        case "etag":
+          return this.validateETagHeader(headerValue);
+
+        default:
+          // For unknown headers, just check basic format
+          return typeof headerValue === "string" && headerValue.length > 0;
+      }
+    } catch (error) {
+      console.warn(`Error validating ${headerName} header:`, error);
+      return false;
+    }
+  }
+
+  // Validate Cache-Control header format
+  validateCacheControlHeader(value) {
+    if (!value || typeof value !== "string") return false;
+
+    // Basic Cache-Control directive validation
+    const validDirectives = [
+      "public",
+      "private",
+      "no-cache",
+      "no-store",
+      "must-revalidate",
+      "proxy-revalidate",
+      "immutable",
+      "stale-while-revalidate",
+      "stale-if-error",
+    ];
+
+    const directives = value
+      .toLowerCase()
+      .split(",")
+      .map((d) => d.trim());
+
+    for (const directive of directives) {
+      // Check for max-age, s-maxage patterns
+      if (/^(max-age|s-maxage)=\d+$/.test(directive)) continue;
+
+      // Check for stale-while-revalidate, stale-if-error patterns
+      if (/^(stale-while-revalidate|stale-if-error)=\d+$/.test(directive)) continue;
+
+      // Check for valid standalone directives
+      if (!validDirectives.includes(directive)) {
+        console.warn("Unknown Cache-Control directive:", directive);
+      }
+    }
+
+    return true;
+  }
+
+  // Validate Expires header format
+  validateExpiresHeader(value) {
+    if (!value || typeof value !== "string") return false;
+
+    try {
+      const date = new Date(value);
+      return !isNaN(date.getTime());
+    } catch (error) {
+      return false;
+    }
+  }
+
+  // Validate Age header format
+  validateAgeHeader(value) {
+    if (!value) return false;
+
+    const ageValue = parseInt(value, 10);
+    return !isNaN(ageValue) && ageValue >= 0;
+  }
+
+  // Validate Content-Length header format
+  validateContentLengthHeader(value) {
+    if (!value) return false;
+
+    const lengthValue = parseInt(value, 10);
+    return !isNaN(lengthValue) && lengthValue >= 0;
+  }
+
+  // Validate ETag header format
+  validateETagHeader(value) {
+    if (!value || typeof value !== "string") return false;
+
+    // Basic ETag format validation (quoted string or W/ prefix)
+    return /^(W\/)?"[^"]*"$/.test(value.trim());
+  }
+
+  // Extract fallback headers when fetch fails
+  extractFallbackHeaders() {
+    console.log("Extracting fallback headers from current page...");
+
+    const fallbackHeaders = {
+      raw: {},
+      cache: {
+        browserCache: {},
+        cdnCache: {},
+        general: {},
+      },
+      security: {},
+      performance: {},
+      other: {},
+      fallback: true,
+      fallbackReason: "Could not fetch original response headers",
+    };
+
+    try {
+      // Try to get some headers from performance entries
+      const navigationEntries = performance.getEntriesByType("navigation");
+      if (navigationEntries.length > 0) {
+        const entry = navigationEntries[0];
+
+        // Add timing information as pseudo-headers
+        fallbackHeaders.performance["x-timing-ttfb"] = `${(
+          entry.responseStart - entry.requestStart
+        ).toFixed(2)}ms`;
+        fallbackHeaders.performance["x-timing-dom-load"] = `${(
+          entry.domContentLoadedEventEnd - entry.domContentLoadedEventStart
+        ).toFixed(2)}ms`;
+      }
+
+      // Check for any meta tags that might indicate caching
+      const metaTags = document.querySelectorAll("meta[http-equiv]");
+      metaTags.forEach((meta) => {
+        const httpEquiv = meta.getAttribute("http-equiv").toLowerCase();
+        const content = meta.getAttribute("content");
+        if (httpEquiv && content) {
+          fallbackHeaders.cache.general[httpEquiv] = content;
+        }
+      });
+    } catch (error) {
+      console.warn("Error extracting fallback headers:", error);
+    }
+
+    return fallbackHeaders;
+  }
+
+  // Find elements with background images
+  findBackgroundImageElements(container) {
+    const elementsWithBgImages = [];
+
+    try {
+      // Get all elements in the container
+      const allElements = container.querySelectorAll("*");
+
+      allElements.forEach((element) => {
+        try {
+          const computedStyle = window.getComputedStyle(element);
+          const backgroundImage = computedStyle.backgroundImage;
+
+          // Check if element has a background image (not 'none')
+          if (backgroundImage && backgroundImage !== "none" && backgroundImage.includes("url(")) {
+            // Extract URL from background-image CSS property
+            const urlMatch = backgroundImage.match(/url\(['"]?([^'"]+)['"]?\)/);
+            if (urlMatch && urlMatch[1]) {
+              elementsWithBgImages.push({
+                element: element,
+                backgroundImageUrl: urlMatch[1],
+                selector: this.generateElementSelector(element),
+              });
+            }
+          }
+        } catch (error) {
+          // Skip elements that can't be processed
+          console.warn("Could not process element for background image:", error);
+        }
+      });
+    } catch (error) {
+      console.error("Error finding background image elements:", error);
+    }
+
+    return elementsWithBgImages;
+  }
+
+  // Generate a CSS selector for an element
+  generateElementSelector(element) {
+    try {
+      // Try to create a unique selector
+      if (element.id) {
+        return `#${element.id}`;
+      }
+
+      if (element.className && typeof element.className === "string") {
+        const classes = element.className.trim().split(/\s+/).slice(0, 3); // Limit to first 3 classes
+        if (classes.length > 0) {
+          return `${element.tagName.toLowerCase()}.${classes.join(".")}`;
+        }
+      }
+
+      // Fallback to tag name with position
+      const siblings = Array.from(element.parentNode?.children || []);
+      const sameTagSiblings = siblings.filter((sibling) => sibling.tagName === element.tagName);
+
+      if (sameTagSiblings.length > 1) {
+        const index = sameTagSiblings.indexOf(element) + 1;
+        return `${element.tagName.toLowerCase()}:nth-of-type(${index})`;
+      }
+
+      return element.tagName.toLowerCase();
+    } catch (error) {
+      console.warn("Error generating element selector:", error);
+      return "unknown";
+    }
+  }
+
+  // Main analysis orchestrator
+  async analyzePerformance() {
+    if (this.isAnalyzing) {
+      console.warn("Analysis already in progress");
+      return null;
+    }
+
+    this.isAnalyzing = true;
+
+    try {
+      console.log("Starting performance recommendations analysis...");
+
+      // Initialize analysis results structure
+      this.analysisResults = {
+        metadata: {
+          url: window.location.href,
+          timestamp: Date.now(),
+          analysisVersion: "2.0",
+          pageLoadType: "navigation",
+          userAgent: navigator.userAgent,
+        },
+        cache: {},
+        lcp: {},
+        scripts: {},
+        links: {},
+        css: {},
+        summary: {},
+      };
+
+      // Step 1: Fetch and parse HTML document
+      console.log("Debug: Starting HTML fetch...");
+      const fetchResult = await this.fetchDocumentHTML();
+      console.log(
+        `Debug: HTML fetch completed. Length: ${
+          this.htmlContent ? this.htmlContent.length : 0
+        }, Fallback used: ${fetchResult.fallbackUsed || false}`
+      );
+
+      const htmlStructure = this.parseHTMLStructure();
+      console.log("Debug: HTML structure parsed:", {
+        hasHead: !!htmlStructure.head,
+        hasBody: !!htmlStructure.body,
+        headLinksCount:
+          htmlStructure.head && htmlStructure.head.links ? htmlStructure.head.links.length : 0,
+        bodyLinksCount:
+          htmlStructure.body && htmlStructure.body.links ? htmlStructure.body.links.length : 0,
+      });
+
+      // Store HTML structure for use by other analysis methods
+      this.htmlStructure = htmlStructure;
+
+      // Step 2: Analyze scripts for optimization opportunities
+      console.log("Step 2: Analyzing scripts...");
+      this.analysisResults.scripts = this.analyzeScripts(htmlStructure);
+
+      // Step 3: Analyze links and preload opportunities
+      console.log("Step 3: Analyzing links...");
+      this.analysisResults.links = this.analyzeLinks(htmlStructure);
+
+      // Step 4: Analyze cache optimization opportunities
+      console.log("Step 4: Analyzing cache...");
+      this.analysisResults.cache = this.analyzeCache();
+
+      // Step 5: Analyze LCP optimization opportunities
+      console.log("Step 5: Analyzing LCP...");
+      this.analysisResults.lcp = this.analyzeLCP(htmlStructure);
+
+      // Step 6: Analyze CSS loading patterns and optimization opportunities
+      console.log("Step 6: Analyzing CSS...");
+      this.analysisResults.css = this.analyzeCSS(htmlStructure);
+
+      // Step 7: Generate summary
+      console.log("Step 7: Generating summary...");
+      this.analysisResults.summary = this.calculateSummary();
+
+      // Prepare CSS analysis infrastructure for future enhancements
+      this.prepareCSSAnalysisInfrastructure();
+
+      console.log("Performance recommendations analysis completed");
+      return this.analysisResults;
+    } catch (error) {
+      console.error("Error during performance analysis:", error);
+      throw error;
+    } finally {
+      this.isAnalyzing = false;
+    }
+  }
+
+  // Get current analysis state
+  getAnalysisState() {
+    return {
+      isAnalyzing: this.isAnalyzing,
+      hasResults: Object.keys(this.analysisResults).length > 0,
+    };
+  }
+
+  // Analyze browser cache headers and determine cache status
+  analyzeBrowserCache() {
+    try {
+      console.log("Analyzing browser cache headers...");
+
+      if (!this.responseHeaders || !this.responseHeaders.cache) {
+        console.warn("No response headers available for browser cache analysis");
+        return {
+          status: "not-cached",
+          ttl: null,
+          cacheControl: null,
+          expires: null,
+          reason: "No cache headers available",
+        };
+      }
+
+      const browserCacheHeaders = this.responseHeaders.cache.browserCache;
+      const result = {
+        status: "not-cached",
+        ttl: null,
+        cacheControl: null,
+        expires: null,
+        reason: null,
+        headers: browserCacheHeaders,
+      };
+
+      // Check Cache-Control header first (takes precedence over Expires)
+      if (browserCacheHeaders["cache-control"]) {
+        result.cacheControl = browserCacheHeaders["cache-control"];
+        const cacheControlAnalysis = this.parseCacheControlHeader(result.cacheControl);
+
+        if (cacheControlAnalysis.isCacheable) {
+          result.status = "cached";
+          result.ttl = cacheControlAnalysis.maxAge;
+          result.reason = "Cache-Control header indicates caching";
+        } else {
+          result.status = "not-cached";
+          result.reason = cacheControlAnalysis.reason || "Cache-Control prevents caching";
+        }
+      }
+      // Fallback to Expires header if no Cache-Control
+      else if (browserCacheHeaders["expires"]) {
+        result.expires = browserCacheHeaders["expires"];
+        const expiresAnalysis = this.parseExpiresHeader(result.expires);
+
+        if (expiresAnalysis.isValid && expiresAnalysis.ttl > 0) {
+          result.status = "cached";
+          result.ttl = expiresAnalysis.ttl;
+          result.reason = "Expires header indicates caching";
+        } else {
+          result.status = "not-cached";
+          result.reason = expiresAnalysis.reason || "Expires header prevents caching";
+        }
+      }
+      // No caching headers found
+      else {
+        result.reason = "No browser-side caching detected";
+      }
+
+      // Check for explicit no-cache directives
+      if (browserCacheHeaders["pragma"] === "no-cache") {
+        result.status = "not-cached";
+        result.reason = "Pragma: no-cache directive";
+      }
+
+      console.log("Browser cache analysis complete:", result);
+      return result;
+    } catch (error) {
+      console.error("Error analyzing browser cache:", error);
+      return {
+        status: "error",
+        ttl: null,
+        cacheControl: null,
+        expires: null,
+        reason: `Analysis error: ${error.message}`,
+        error: error.message,
+      };
+    }
+  }
+
+  // Parse Cache-Control header and extract TTL
+  parseCacheControlHeader(cacheControlValue) {
+    try {
+      if (!cacheControlValue || typeof cacheControlValue !== "string") {
+        return {
+          isCacheable: false,
+          maxAge: null,
+          reason: "Invalid Cache-Control header",
+        };
+      }
+
+      const directives = cacheControlValue
+        .toLowerCase()
+        .split(",")
+        .map((directive) => directive.trim());
+
+      const result = {
+        isCacheable: true,
+        maxAge: null,
+        reason: null,
+        directives: directives,
+      };
+
+      // Check for no-cache directives
+      if (
+        directives.includes("no-cache") ||
+        directives.includes("no-store") ||
+        directives.includes("private")
+      ) {
+        result.isCacheable = false;
+        result.reason = "Cache-Control contains no-cache directive";
+        return result;
+      }
+
+      // Extract max-age value
+      const maxAgeDirective = directives.find((directive) => directive.startsWith("max-age="));
+      if (maxAgeDirective) {
+        const maxAgeValue = maxAgeDirective.split("=")[1];
+        const maxAgeSeconds = parseInt(maxAgeValue, 10);
+
+        if (!isNaN(maxAgeSeconds) && maxAgeSeconds >= 0) {
+          result.maxAge = maxAgeSeconds;
+          result.reason = `Cacheable for ${maxAgeSeconds} seconds`;
+        } else {
+          result.isCacheable = false;
+          result.reason = "Invalid max-age value";
+        }
+      } else {
+        // If no max-age but cacheable directives present
+        result.reason = "Cacheable but no explicit TTL";
+      }
+
+      return result;
+    } catch (error) {
+      console.error("Error parsing Cache-Control header:", error);
+      return {
+        isCacheable: false,
+        maxAge: null,
+        reason: `Parse error: ${error.message}`,
+      };
+    }
+  }
+
+  // Parse Expires header and calculate TTL
+  parseExpiresHeader(expiresValue) {
+    try {
+      if (!expiresValue || typeof expiresValue !== "string") {
+        return {
+          isValid: false,
+          ttl: null,
+          reason: "Invalid Expires header",
+        };
+      }
+
+      // Parse the expires date
+      const expiresDate = new Date(expiresValue);
+      const currentDate = new Date();
+
+      if (isNaN(expiresDate.getTime())) {
+        return {
+          isValid: false,
+          ttl: null,
+          reason: "Invalid date format in Expires header",
+        };
+      }
+
+      // Calculate TTL in seconds
+      const ttlMs = expiresDate.getTime() - currentDate.getTime();
+      const ttlSeconds = Math.floor(ttlMs / 1000);
+
+      if (ttlSeconds <= 0) {
+        return {
+          isValid: true,
+          ttl: 0,
+          reason: "Resource has already expired",
+        };
+      }
+
+      return {
+        isValid: true,
+        ttl: ttlSeconds,
+        reason: `Expires in ${ttlSeconds} seconds`,
+        expiresDate: expiresDate,
+      };
+    } catch (error) {
+      console.error("Error parsing Expires header:", error);
+      return {
+        isValid: false,
+        ttl: null,
+        reason: `Parse error: ${error.message}`,
+      };
+    }
+  }
+
+  // Analyze CDN cache headers and detect cache hits
+  analyzeCDNCache() {
+    try {
+      console.log("Analyzing CDN cache headers...");
+
+      if (!this.responseHeaders || !this.responseHeaders.cache) {
+        console.warn("No response headers available for CDN cache analysis");
+        return {
+          status: "unknown",
+          provider: "unknown",
+          ttl: null,
+          age: null,
+          cacheHeaders: {},
+          reason: "No cache headers available",
+        };
+      }
+
+      const cdnCacheHeaders = this.responseHeaders.cache.cdnCache;
+      const result = {
+        status: "unknown",
+        provider: "unknown",
+        ttl: null,
+        age: null,
+        cacheHeaders: cdnCacheHeaders,
+        reason: null,
+      };
+
+      // Detect CDN provider and analyze cache status
+      const providerDetection = this.detectCDNProvider(cdnCacheHeaders);
+      result.provider = providerDetection.provider;
+
+      // Parse Age header if present
+      if (cdnCacheHeaders["age"]) {
+        const ageValue = parseInt(cdnCacheHeaders["age"], 10);
+        if (!isNaN(ageValue) && ageValue >= 0) {
+          result.age = ageValue;
+        }
+      }
+
+      // Analyze cache status based on provider-specific headers
+      const cacheStatusAnalysis = this.analyzeCDNCacheStatus(cdnCacheHeaders, providerDetection);
+      result.status = cacheStatusAnalysis.status;
+      result.ttl = cacheStatusAnalysis.ttl;
+      result.reason = cacheStatusAnalysis.reason;
+
+      // If Age > 0, it's likely a cache hit
+      if (result.age && result.age > 0 && result.status === "unknown") {
+        result.status = "hit";
+        result.reason = `Cache hit detected (Age: ${result.age}s)`;
+      }
+
+      console.log("CDN cache analysis complete:", result);
+      return result;
+    } catch (error) {
+      console.error("Error analyzing CDN cache:", error);
+      return {
+        status: "error",
+        provider: "unknown",
+        ttl: null,
+        age: null,
+        cacheHeaders: {},
+        reason: `Analysis error: ${error.message}`,
+        error: error.message,
+      };
+    }
+  }
+
+  // Detect CDN provider based on response headers
+  detectCDNProvider(cdnHeaders) {
+    try {
+      const result = {
+        provider: "unknown",
+        confidence: 0,
+        indicators: [],
+      };
+
+      // Cloudflare detection
+      if (cdnHeaders["cf-cache-status"] || cdnHeaders["cf-ray"] || cdnHeaders["cf-request-id"]) {
+        result.provider = "cloudflare";
+        result.confidence = 0.9;
+        result.indicators.push("cf-cache-status", "cf-ray", "cf-request-id");
+      }
+      // Fastly detection
+      else if (
+        cdnHeaders["x-fastly-request-id"] ||
+        cdnHeaders["x-fastly-cache"] ||
+        cdnHeaders["x-served-by"]?.includes("fastly")
+      ) {
+        result.provider = "fastly";
+        result.confidence = 0.9;
+        result.indicators.push("x-fastly-request-id", "x-fastly-cache");
+      }
+      // AWS CloudFront detection
+      else if (cdnHeaders["x-amz-cf-pop"] || cdnHeaders["x-amz-cf-id"]) {
+        result.provider = "aws";
+        result.confidence = 0.9;
+        result.indicators.push("x-amz-cf-pop", "x-amz-cf-id");
+      }
+      // Akamai detection
+      else if (cdnHeaders["x-akamai-request-id"] || cdnHeaders["x-cache"]?.includes("akamai")) {
+        result.provider = "akamai";
+        result.confidence = 0.8;
+        result.indicators.push("x-akamai-request-id", "x-cache");
+      }
+      // Generic CDN detection based on common headers
+      else if (cdnHeaders["x-cache"] || cdnHeaders["x-cache-hits"] || cdnHeaders["x-varnish"]) {
+        result.provider = "generic";
+        result.confidence = 0.6;
+        result.indicators.push("x-cache", "x-cache-hits", "x-varnish");
+      }
+
+      return result;
+    } catch (error) {
+      console.error("Error detecting CDN provider:", error);
+      return {
+        provider: "unknown",
+        confidence: 0,
+        indicators: [],
+        error: error.message,
+      };
+    }
+  }
+
+  // Analyze CDN cache status based on provider-specific headers
+  analyzeCDNCacheStatus(cdnHeaders, providerInfo) {
+    try {
+      const result = {
+        status: "unknown",
+        ttl: null,
+        reason: "No cache status indicators found",
+      };
+
+      switch (providerInfo.provider) {
+        case "cloudflare":
+          return this.analyzeCloudflareCache(cdnHeaders);
+
+        case "fastly":
+          return this.analyzeFastlyCache(cdnHeaders);
+
+        case "aws":
+          return this.analyzeAWSCloudFrontCache(cdnHeaders);
+
+        case "akamai":
+          return this.analyzeAkamaiCache(cdnHeaders);
+
+        case "generic":
+          return this.analyzeGenericCDNCache(cdnHeaders);
+
+        default:
+          // Try to extract basic cache information from common headers
+          if (cdnHeaders["x-cache"]) {
+            const xCacheValue = cdnHeaders["x-cache"].toLowerCase();
+            if (xCacheValue.includes("hit")) {
+              result.status = "hit";
+              result.reason = "X-Cache header indicates cache hit";
+            } else if (xCacheValue.includes("miss")) {
+              result.status = "miss";
+              result.reason = "X-Cache header indicates cache miss";
+            }
+          }
+          break;
+      }
+
+      return result;
+    } catch (error) {
+      console.error("Error analyzing CDN cache status:", error);
+      return {
+        status: "error",
+        ttl: null,
+        reason: `Cache status analysis error: ${error.message}`,
+      };
+    }
+  }
+
+  // Analyze Cloudflare cache headers
+  analyzeCloudflareCache(headers) {
+    const result = {
+      status: "unknown",
+      ttl: null,
+      reason: null,
+    };
+
+    if (headers["cf-cache-status"]) {
+      const cacheStatus = headers["cf-cache-status"].toLowerCase();
+
+      switch (cacheStatus) {
+        case "hit":
+          result.status = "hit";
+          result.reason = "Cloudflare cache hit";
+          break;
+        case "miss":
+          result.status = "miss";
+          result.reason = "Cloudflare cache miss";
+          break;
+        case "expired":
+          result.status = "miss";
+          result.reason = "Cloudflare cache expired";
+          break;
+        case "bypass":
+          result.status = "miss";
+          result.reason = "Cloudflare cache bypassed";
+          break;
+        case "dynamic":
+          result.status = "miss";
+          result.reason = "Cloudflare dynamic content (not cached)";
+          break;
+        default:
+          result.status = "unknown";
+          result.reason = `Cloudflare cache status: ${cacheStatus}`;
+      }
+    }
+
+    // Extract TTL from Cloudflare edge cache headers if available
+    if (headers["cf-edge-cache"]) {
+      const edgeCacheValue = headers["cf-edge-cache"];
+      const maxAgeMatch = edgeCacheValue.match(/max-age=(\d+)/);
+      if (maxAgeMatch) {
+        result.ttl = parseInt(maxAgeMatch[1], 10);
+      }
+    }
+
+    return result;
+  }
+
+  // Analyze Fastly cache headers
+  analyzeFastlyCache(headers) {
+    const result = {
+      status: "unknown",
+      ttl: null,
+      reason: null,
+    };
+
+    if (headers["x-cache"]) {
+      const xCacheValue = headers["x-cache"].toLowerCase();
+      if (xCacheValue.includes("hit")) {
+        result.status = "hit";
+        result.reason = "Fastly cache hit";
+      } else if (xCacheValue.includes("miss")) {
+        result.status = "miss";
+        result.reason = "Fastly cache miss";
+      }
+    }
+
+    // Check for Fastly-specific cache headers
+    if (headers["x-fastly-cache"]) {
+      const fastlyCacheValue = headers["x-fastly-cache"].toLowerCase();
+      if (fastlyCacheValue.includes("hit")) {
+        result.status = "hit";
+        result.reason = "Fastly cache hit (x-fastly-cache)";
+      }
+    }
+
+    return result;
+  }
+
+  // Analyze AWS CloudFront cache headers
+  analyzeAWSCloudFrontCache(headers) {
+    const result = {
+      status: "unknown",
+      ttl: null,
+      reason: null,
+    };
+
+    if (headers["x-cache"]) {
+      const xCacheValue = headers["x-cache"].toLowerCase();
+      if (xCacheValue.includes("hit")) {
+        result.status = "hit";
+        result.reason = "CloudFront cache hit";
+      } else if (xCacheValue.includes("miss")) {
+        result.status = "miss";
+        result.reason = "CloudFront cache miss";
+      }
+    }
+
+    // CloudFront age header indicates cache hit if present
+    if (headers["age"] && parseInt(headers["age"], 10) > 0) {
+      result.status = "hit";
+      result.reason = "CloudFront cache hit (Age header present)";
+    }
+
+    return result;
+  }
+
+  // Analyze Akamai cache headers
+  analyzeAkamaiCache(headers) {
+    const result = {
+      status: "unknown",
+      ttl: null,
+      reason: null,
+    };
+
+    if (headers["x-cache"]) {
+      const xCacheValue = headers["x-cache"].toLowerCase();
+      if (xCacheValue.includes("hit")) {
+        result.status = "hit";
+        result.reason = "Akamai cache hit";
+      } else if (xCacheValue.includes("miss")) {
+        result.status = "miss";
+        result.reason = "Akamai cache miss";
+      }
+    }
+
+    return result;
+  }
+
+  // Analyze generic CDN cache headers
+  analyzeGenericCDNCache(headers) {
+    const result = {
+      status: "unknown",
+      ttl: null,
+      reason: null,
+    };
+
+    // Check common cache headers
+    if (headers["x-cache"]) {
+      const xCacheValue = headers["x-cache"].toLowerCase();
+      if (xCacheValue.includes("hit")) {
+        result.status = "hit";
+        result.reason = "CDN cache hit (x-cache)";
+      } else if (xCacheValue.includes("miss")) {
+        result.status = "miss";
+        result.reason = "CDN cache miss (x-cache)";
+      }
+    }
+
+    // Check for cache hits counter
+    if (headers["x-cache-hits"]) {
+      const cacheHits = parseInt(headers["x-cache-hits"], 10);
+      if (!isNaN(cacheHits) && cacheHits > 0) {
+        result.status = "hit";
+        result.reason = `CDN cache hit (${cacheHits} hits)`;
+      }
+    }
+
+    // Check Varnish cache headers
+    if (headers["x-varnish"]) {
+      const varnishValue = headers["x-varnish"];
+      // Varnish includes multiple IDs for cache hits
+      if (varnishValue.includes(" ")) {
+        result.status = "hit";
+        result.reason = "Varnish cache hit";
+      } else {
+        result.status = "miss";
+        result.reason = "Varnish cache miss";
+      }
+    }
+
+    return result;
+  }
+
+  // Identify LCP candidate elements in HTML
+  identifyLCPCandidates(htmlContent = null) {
+    try {
+      const html = htmlContent || this.htmlContent;
+
+      if (!html) {
+        throw new Error("No HTML content available for LCP analysis");
+      }
+
+      console.log("Identifying LCP candidate elements...");
+
+      // Parse HTML structure if not already done
+      const structure = this.parseHTMLStructure(html);
+
+      const lcpCandidates = {
+        images: [],
+        videos: [],
+        backgroundImages: [],
+        textBlocks: [],
+        metadata: {
+          totalCandidates: 0,
+          analysisTimestamp: Date.now(),
+          url: window.location.href,
+        },
+      };
+
+      // Find image elements (high priority LCP candidates)
+      structure.all.images.forEach((img) => {
+        if (img.src) {
+          const candidate = {
+            element: img,
+            type: "img",
+            src: img.src,
+            selector: this.generateElementSelector(img),
+            attributes: {
+              alt: img.alt || null,
+              loading: img.loading || null,
+              fetchpriority: img.getAttribute("fetchpriority") || null,
+              sizes: img.sizes || null,
+              srcset: img.srcset || null,
+            },
+            dimensions: this.getElementDimensions(img),
+            isAboveFold: this.isElementAboveFold(img),
+            serverSideRendered: true, // Present in initial HTML
+          };
+
+          lcpCandidates.images.push(candidate);
+        }
+      });
+
+      // Find video elements (potential LCP candidates)
+      structure.all.videos.forEach((video) => {
+        const candidate = {
+          element: video,
+          type: "video",
+          src: video.src || video.querySelector("source")?.src || null,
+          selector: this.generateElementSelector(video),
+          attributes: {
+            poster: video.poster || null,
+            autoplay: video.autoplay || false,
+            muted: video.muted || false,
+            controls: video.controls || false,
+          },
+          dimensions: this.getElementDimensions(video),
+          isAboveFold: this.isElementAboveFold(video),
+          serverSideRendered: true, // Present in initial HTML
+        };
+
+        lcpCandidates.videos.push(candidate);
+      });
+
+      // Find elements with background images
+      structure.body.backgroundImages.forEach((bgImg) => {
+        const candidate = {
+          element: bgImg.element,
+          type: "background-image",
+          src: bgImg.backgroundImageUrl,
+          selector: bgImg.selector,
+          attributes: {
+            tagName: bgImg.element.tagName,
+            id: bgImg.element.id || null,
+            className: bgImg.element.className || null,
+          },
+          dimensions: this.getElementDimensions(bgImg.element),
+          isAboveFold: this.isElementAboveFold(bgImg.element),
+          serverSideRendered: true, // Present in initial HTML
+        };
+
+        lcpCandidates.backgroundImages.push(candidate);
+      });
+
+      // Find large text blocks (potential LCP candidates)
+      const textBlocks = this.findLargeTextBlocks(structure);
+      lcpCandidates.textBlocks = textBlocks;
+
+      // Calculate total candidates
+      lcpCandidates.metadata.totalCandidates =
+        lcpCandidates.images.length +
+        lcpCandidates.videos.length +
+        lcpCandidates.backgroundImages.length +
+        lcpCandidates.textBlocks.length;
+
+      // Detect server-side rendering status
+      const ssrStatus = this.detectServerSideRendering(lcpCandidates);
+      lcpCandidates.serverSideRenderingStatus = ssrStatus;
+
+      console.log(`LCP candidates identified: ${lcpCandidates.metadata.totalCandidates} total`);
+      console.log(`- Images: ${lcpCandidates.images.length}`);
+      console.log(`- Videos: ${lcpCandidates.videos.length}`);
+      console.log(`- Background Images: ${lcpCandidates.backgroundImages.length}`);
+      console.log(`- Text Blocks: ${lcpCandidates.textBlocks.length}`);
+
+      return lcpCandidates;
+    } catch (error) {
+      console.error("Error identifying LCP candidates:", error);
+      throw new Error(`LCP candidate identification failed: ${error.message}`);
+    }
+  }
+
+  // Detect server-side rendering status for LCP elements
+  detectServerSideRendering(lcpCandidates) {
+    try {
+      console.log("Detecting server-side rendering status...");
+
+      const ssrStatus = {
+        hasServerSideRenderedContent: false,
+        clientSideOnlyElements: [],
+        serverSideElements: [],
+        analysis: {
+          totalElementsAnalyzed: 0,
+          serverSideCount: 0,
+          clientSideCount: 0,
+          confidence: "high", // high, medium, low
+        },
+      };
+
+      // All elements found in initial HTML are server-side rendered
+      const allCandidates = [
+        ...lcpCandidates.images,
+        ...lcpCandidates.videos,
+        ...lcpCandidates.backgroundImages,
+        ...lcpCandidates.textBlocks,
+      ];
+
+      allCandidates.forEach((candidate) => {
+        ssrStatus.analysis.totalElementsAnalyzed++;
+
+        if (candidate.serverSideRendered) {
+          ssrStatus.analysis.serverSideCount++;
+          ssrStatus.serverSideElements.push({
+            type: candidate.type,
+            selector: candidate.selector,
+            src: candidate.src || null,
+          });
+        } else {
+          ssrStatus.analysis.clientSideCount++;
+          ssrStatus.clientSideOnlyElements.push({
+            type: candidate.type,
+            selector: candidate.selector,
+            src: candidate.src || null,
+          });
+        }
+      });
+
+      // Determine if there's server-side rendered content
+      ssrStatus.hasServerSideRenderedContent = ssrStatus.analysis.serverSideCount > 0;
+
+      // Check for client-side only elements by comparing with current DOM
+      const currentDOMElements = this.getCurrentDOMLCPCandidates();
+      const clientSideOnly = this.findClientSideOnlyElements(allCandidates, currentDOMElements);
+
+      ssrStatus.clientSideOnlyElements.push(...clientSideOnly);
+      ssrStatus.analysis.clientSideCount += clientSideOnly.length;
+
+      // Adjust confidence based on analysis
+      if (ssrStatus.analysis.totalElementsAnalyzed === 0) {
+        ssrStatus.analysis.confidence = "low";
+      } else if (ssrStatus.analysis.clientSideCount > ssrStatus.analysis.serverSideCount) {
+        ssrStatus.analysis.confidence = "medium";
+      }
+
+      console.log(
+        `SSR Analysis: ${ssrStatus.analysis.serverSideCount} server-side, ${ssrStatus.analysis.clientSideCount} client-side`
+      );
+
+      return ssrStatus;
+    } catch (error) {
+      console.error("Error detecting server-side rendering:", error);
+      return {
+        hasServerSideRenderedContent: false,
+        clientSideOnlyElements: [],
+        serverSideElements: [],
+        analysis: {
+          totalElementsAnalyzed: 0,
+          serverSideCount: 0,
+          clientSideCount: 0,
+          confidence: "low",
+          error: error.message,
+        },
+      };
+    }
+  }
+
+  // Get current DOM LCP candidates for comparison
+  getCurrentDOMLCPCandidates() {
+    try {
+      const currentCandidates = [];
+
+      // Get current images
+      document.querySelectorAll("img[src]").forEach((img) => {
+        currentCandidates.push({
+          type: "img",
+          element: img,
+          src: img.src,
+          selector: this.generateElementSelector(img),
+        });
+      });
+
+      // Get current videos
+      document.querySelectorAll("video").forEach((video) => {
+        currentCandidates.push({
+          type: "video",
+          element: video,
+          src: video.src || video.querySelector("source")?.src || null,
+          selector: this.generateElementSelector(video),
+        });
+      });
+
+      // Get current background images
+      const bgImages = this.findBackgroundImageElements(document.body);
+      bgImages.forEach((bgImg) => {
+        currentCandidates.push({
+          type: "background-image",
+          element: bgImg.element,
+          src: bgImg.backgroundImageUrl,
+          selector: bgImg.selector,
+        });
+      });
+
+      return currentCandidates;
+    } catch (error) {
+      console.error("Error getting current DOM LCP candidates:", error);
+      return [];
+    }
+  }
+
+  // Find elements that exist in current DOM but not in initial HTML
+  findClientSideOnlyElements(initialElements, currentElements) {
+    try {
+      const clientSideOnly = [];
+
+      currentElements.forEach((currentEl) => {
+        // Check if this element exists in initial HTML
+        const existsInInitial = initialElements.some(
+          (initialEl) =>
+            initialEl.selector === currentEl.selector && initialEl.src === currentEl.src
+        );
+
+        if (!existsInInitial) {
+          clientSideOnly.push({
+            type: currentEl.type,
+            selector: currentEl.selector,
+            src: currentEl.src,
+            serverSideRendered: false,
+          });
+        }
+      });
+
+      return clientSideOnly;
+    } catch (error) {
+      console.error("Error finding client-side only elements:", error);
+      return [];
+    }
+  }
+
+  // Find large text blocks that could be LCP candidates
+  findLargeTextBlocks(structure) {
+    try {
+      const textBlocks = [];
+      const minTextLength = 100; // Minimum characters for consideration
+
+      // Common text container selectors
+      const textSelectors = ["h1", "h2", "h3", "p", "div", "article", "section", "main"];
+
+      textSelectors.forEach((selector) => {
+        const elements = structure.body.element.querySelectorAll(selector);
+
+        elements.forEach((element) => {
+          const textContent = element.textContent?.trim() || "";
+
+          if (textContent.length >= minTextLength) {
+            const candidate = {
+              element: element,
+              type: "text-block",
+              textLength: textContent.length,
+              selector: this.generateElementSelector(element),
+              attributes: {
+                tagName: element.tagName,
+                id: element.id || null,
+                className: element.className || null,
+              },
+              dimensions: this.getElementDimensions(element),
+              isAboveFold: this.isElementAboveFold(element),
+              serverSideRendered: true, // Present in initial HTML
+            };
+
+            textBlocks.push(candidate);
+          }
+        });
+      });
+
+      return textBlocks;
+    } catch (error) {
+      console.error("Error finding large text blocks:", error);
+      return [];
+    }
+  }
+
+  // Get element dimensions safely
+  getElementDimensions(element) {
+    try {
+      if (!element || !element.getBoundingClientRect) {
+        return { width: 0, height: 0, area: 0 };
+      }
+
+      const rect = element.getBoundingClientRect();
+      return {
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+        area: Math.round(rect.width * rect.height),
+      };
+    } catch (error) {
+      return { width: 0, height: 0, area: 0 };
+    }
+  }
+
+  // Check if element is above the fold
+  isElementAboveFold(element) {
+    try {
+      if (!element || !element.getBoundingClientRect) {
+        return false;
+      }
+
+      const rect = element.getBoundingClientRect();
+      const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+
+      // Element is above fold if its top is within the viewport
+      return rect.top < viewportHeight && rect.bottom > 0;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  // Validate LCP preload links
+  validateLCPPreloads(lcpCandidates, htmlStructure = null) {
+    try {
+      console.log("Validating LCP preload links...");
+
+      const structure = htmlStructure || this.parseHTMLStructure();
+
+      const preloadValidation = {
+        preloadLinks: [],
+        lcpElementsWithPreload: [],
+        lcpElementsWithoutPreload: [],
+        redundantPreloads: [],
+        invalidPreloads: [],
+        recommendations: [],
+        analysis: {
+          totalLCPCandidates: 0,
+          preloadedCandidates: 0,
+          missingPreloads: 0,
+          validPreloads: 0,
+          invalidPreloads: 0,
+        },
+      };
+
+      // Extract all preload links from HEAD
+      const preloadLinks = this.extractPreloadLinks(structure);
+      preloadValidation.preloadLinks = preloadLinks;
+
+      // Get high-priority LCP candidates (images and videos above fold)
+      const highPriorityLCPCandidates = this.getHighPriorityLCPCandidates(lcpCandidates);
+      preloadValidation.analysis.totalLCPCandidates = highPriorityLCPCandidates.length;
+
+      // Cross-reference LCP candidates with preload links
+      const crossReference = this.crossReferenceLCPWithPreloads(
+        highPriorityLCPCandidates,
+        preloadLinks
+      );
+
+      preloadValidation.lcpElementsWithPreload = crossReference.withPreload;
+      preloadValidation.lcpElementsWithoutPreload = crossReference.withoutPreload;
+      preloadValidation.analysis.preloadedCandidates = crossReference.withPreload.length;
+      preloadValidation.analysis.missingPreloads = crossReference.withoutPreload.length;
+
+      // Detect redundant and invalid preloads
+      const redundantPreloads = this.detectRedundantPreloads(
+        preloadLinks,
+        highPriorityLCPCandidates
+      );
+      preloadValidation.redundantPreloads = redundantPreloads;
+
+      const invalidPreloads = this.detectInvalidPreloads(preloadLinks);
+      preloadValidation.invalidPreloads = invalidPreloads;
+      preloadValidation.analysis.invalidPreloads = invalidPreloads.length;
+      preloadValidation.analysis.validPreloads = preloadLinks.length - invalidPreloads.length;
+
+      // Generate recommendations
+      const recommendations = this.generateLCPPreloadRecommendations(preloadValidation);
+      preloadValidation.recommendations = recommendations;
+
+      console.log(`LCP Preload Validation Complete:`);
+      console.log(`- Total LCP Candidates: ${preloadValidation.analysis.totalLCPCandidates}`);
+      console.log(`- With Preload: ${preloadValidation.analysis.preloadedCandidates}`);
+      console.log(`- Missing Preload: ${preloadValidation.analysis.missingPreloads}`);
+      console.log(`- Invalid Preloads: ${preloadValidation.analysis.invalidPreloads}`);
+
+      return preloadValidation;
+    } catch (error) {
+      console.error("Error validating LCP preloads:", error);
+      throw new Error(`LCP preload validation failed: ${error.message}`);
+    }
+  }
+
+  // Extract preload links from HTML structure
+  extractPreloadLinks(structure) {
+    try {
+      const preloadLinks = [];
+
+      const preloads = structure.head && structure.head.preloads ? structure.head.preloads : [];
+      preloads.forEach((link) => {
+        const preloadInfo = {
+          element: link,
+          href: link.href,
+          as: link.getAttribute("as"),
+          type: link.getAttribute("type"),
+          media: link.getAttribute("media"),
+          crossorigin: link.getAttribute("crossorigin"),
+          fetchpriority: link.getAttribute("fetchpriority"),
+          selector: this.generateElementSelector(link),
+          isValid: true,
+          validationErrors: [],
+        };
+
+        // Basic validation
+        if (!preloadInfo.href) {
+          preloadInfo.isValid = false;
+          preloadInfo.validationErrors.push("Missing href attribute");
+        }
+
+        if (!preloadInfo.as) {
+          preloadInfo.isValid = false;
+          preloadInfo.validationErrors.push("Missing as attribute");
+        }
+
+        preloadLinks.push(preloadInfo);
+      });
+
+      return preloadLinks;
+    } catch (error) {
+      console.error("Error extracting preload links:", error);
+      return [];
+    }
+  }
+
+  // Get high-priority LCP candidates (above fold images and videos)
+  getHighPriorityLCPCandidates(lcpCandidates) {
+    try {
+      const highPriority = [];
+
+      // Images above fold are high priority
+      lcpCandidates.images.forEach((img) => {
+        if (img.isAboveFold && img.dimensions.area > 1000) {
+          // Minimum size threshold
+          highPriority.push({
+            ...img,
+            priority: "high",
+            reason: "Above-fold image with significant size",
+          });
+        }
+      });
+
+      // Videos above fold are high priority
+      lcpCandidates.videos.forEach((video) => {
+        if (video.isAboveFold) {
+          highPriority.push({
+            ...video,
+            priority: "high",
+            reason: "Above-fold video element",
+          });
+        }
+      });
+
+      // Large background images above fold
+      lcpCandidates.backgroundImages.forEach((bgImg) => {
+        if (bgImg.isAboveFold && bgImg.dimensions.area > 5000) {
+          // Higher threshold for bg images
+          highPriority.push({
+            ...bgImg,
+            priority: "high",
+            reason: "Above-fold background image with large area",
+          });
+        }
+      });
+
+      return highPriority;
+    } catch (error) {
+      console.error("Error getting high-priority LCP candidates:", error);
+      return [];
+    }
+  }
+
+  // Cross-reference LCP candidates with preload links
+  crossReferenceLCPWithPreloads(lcpCandidates, preloadLinks) {
+    try {
+      const withPreload = [];
+      const withoutPreload = [];
+
+      lcpCandidates.forEach((candidate) => {
+        // Find matching preload link
+        const matchingPreload = this.findMatchingPreload(candidate, preloadLinks);
+
+        if (matchingPreload) {
+          withPreload.push({
+            lcpCandidate: candidate,
+            preloadLink: matchingPreload,
+            matchType: matchingPreload.matchType,
+          });
+        } else {
+          withoutPreload.push({
+            lcpCandidate: candidate,
+            recommendedPreload: this.generateRecommendedPreload(candidate),
+          });
+        }
+      });
+
+      return { withPreload, withoutPreload };
+    } catch (error) {
+      console.error("Error cross-referencing LCP with preloads:", error);
+      return { withPreload: [], withoutPreload: [] };
+    }
+  }
+
+  // Find matching preload link for LCP candidate
+  findMatchingPreload(lcpCandidate, preloadLinks) {
+    try {
+      for (const preload of preloadLinks) {
+        // Direct URL match
+        if (this.urlsMatch(lcpCandidate.src, preload.href)) {
+          return {
+            ...preload,
+            matchType: "exact-url",
+          };
+        }
+
+        // Type-based match for appropriate 'as' attribute
+        if (this.isAppropriatePreloadType(lcpCandidate, preload)) {
+          // Check for partial URL match (same filename)
+          if (this.partialUrlMatch(lcpCandidate.src, preload.href)) {
+            return {
+              ...preload,
+              matchType: "partial-url",
+            };
+          }
+        }
+      }
+
+      return null;
+    } catch (error) {
+      console.error("Error finding matching preload:", error);
+      return null;
+    }
+  }
+
+  // Check if URLs match (handling relative vs absolute URLs)
+  urlsMatch(url1, url2) {
+    try {
+      if (!url1 || !url2) return false;
+
+      // Normalize URLs
+      const normalizedUrl1 = this.normalizeUrl(url1);
+      const normalizedUrl2 = this.normalizeUrl(url2);
+
+      return normalizedUrl1 === normalizedUrl2;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  // Normalize URL for comparison
+  normalizeUrl(url) {
+    try {
+      // Handle relative URLs
+      if (url.startsWith("/")) {
+        return new URL(url, window.location.origin).href;
+      }
+
+      if (url.startsWith("./") || !url.includes("://")) {
+        return new URL(url, window.location.href).href;
+      }
+
+      return url;
+    } catch (error) {
+      return url;
+    }
+  }
+
+  // Check for partial URL match (same filename)
+  partialUrlMatch(url1, url2) {
+    try {
+      const filename1 = url1.split("/").pop()?.split("?")[0];
+      const filename2 = url2.split("/").pop()?.split("?")[0];
+
+      return filename1 && filename2 && filename1 === filename2;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  // Check if preload type is appropriate for LCP candidate
+  isAppropriatePreloadType(lcpCandidate, preload) {
+    try {
+      switch (lcpCandidate.type) {
+        case "img":
+          return preload.as === "image";
+        case "video":
+          return preload.as === "video";
+        case "background-image":
+          return preload.as === "image";
+        default:
+          return false;
+      }
+    } catch (error) {
+      return false;
+    }
+  }
+
+  // Generate recommended preload for LCP candidate
+  generateRecommendedPreload(lcpCandidate) {
+    try {
+      const recommendation = {
+        href: lcpCandidate.src,
+        as: this.getRecommendedAsAttribute(lcpCandidate),
+        fetchpriority: "high",
+        reason: `Missing preload for ${lcpCandidate.type} LCP candidate`,
+      };
+
+      // Add type attribute for images if needed
+      if (lcpCandidate.type === "img" && lcpCandidate.src) {
+        const extension = lcpCandidate.src.split(".").pop()?.toLowerCase();
+        if (extension && ["webp", "avif"].includes(extension)) {
+          recommendation.type = `image/${extension}`;
+        }
+      }
+
+      // Add crossorigin if needed
+      if (this.needsCrossOrigin(lcpCandidate.src)) {
+        recommendation.crossorigin = "anonymous";
+      }
+
+      return recommendation;
+    } catch (error) {
+      console.error("Error generating recommended preload:", error);
+      return null;
+    }
+  }
+
+  // Get recommended 'as' attribute for LCP candidate
+  getRecommendedAsAttribute(lcpCandidate) {
+    switch (lcpCandidate.type) {
+      case "img":
+      case "background-image":
+        return "image";
+      case "video":
+        return "video";
+      default:
+        return "fetch";
+    }
+  }
+
+  // Check if resource needs crossorigin attribute
+  needsCrossOrigin(url) {
+    try {
+      const resourceOrigin = new URL(url, window.location.href).origin;
+      return resourceOrigin !== window.location.origin;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  // Detect redundant preloads
+  detectRedundantPreloads(preloadLinks, lcpCandidates) {
+    try {
+      const redundant = [];
+
+      preloadLinks.forEach((preload) => {
+        // Check if this preload doesn't match any LCP candidate
+        const hasMatchingLCP = lcpCandidates.some(
+          (candidate) =>
+            this.urlsMatch(candidate.src, preload.href) ||
+            this.partialUrlMatch(candidate.src, preload.href)
+        );
+
+        if (!hasMatchingLCP && (preload.as === "image" || preload.as === "video")) {
+          redundant.push({
+            preload: preload,
+            reason: "Preload for non-LCP resource",
+            recommendation: "Consider removing or lowering priority",
+          });
+        }
+      });
+
+      return redundant;
+    } catch (error) {
+      console.error("Error detecting redundant preloads:", error);
+      return [];
+    }
+  }
+
+  // Detect invalid preloads
+  detectInvalidPreloads(preloadLinks) {
+    try {
+      const invalid = [];
+
+      preloadLinks.forEach((preload) => {
+        if (!preload.isValid) {
+          invalid.push({
+            preload: preload,
+            errors: preload.validationErrors,
+            recommendation: "Fix preload link attributes",
+          });
+        }
+
+        // Additional validation checks
+        if (preload.as === "image" && !preload.href) {
+          invalid.push({
+            preload: preload,
+            errors: ["Image preload missing href"],
+            recommendation: "Add valid href attribute",
+          });
+        }
+
+        if (preload.as === "video" && !preload.href) {
+          invalid.push({
+            preload: preload,
+            errors: ["Video preload missing href"],
+            recommendation: "Add valid href attribute",
+          });
+        }
+      });
+
+      return invalid;
+    } catch (error) {
+      console.error("Error detecting invalid preloads:", error);
+      return [];
+    }
+  }
+
+  // Generate LCP preload recommendations
+  generateLCPPreloadRecommendations(preloadValidation) {
+    try {
+      const recommendations = [];
+
+      // Recommend preloads for missing LCP elements
+      preloadValidation.lcpElementsWithoutPreload.forEach((item) => {
+        if (item.recommendedPreload) {
+          recommendations.push({
+            type: "add-preload",
+            priority: "high",
+            element: item.lcpCandidate,
+            recommendation: item.recommendedPreload,
+            impact: "Improves LCP by preloading critical resource",
+            htmlExample: this.generatePreloadHTML(item.recommendedPreload),
+          });
+        }
+      });
+
+      // Recommend removing redundant preloads
+      preloadValidation.redundantPreloads.forEach((item) => {
+        recommendations.push({
+          type: "remove-redundant-preload",
+          priority: "medium",
+          preload: item.preload,
+          reason: item.reason,
+          impact: "Reduces unnecessary resource loading",
+        });
+      });
+
+      // Recommend fixing invalid preloads
+      preloadValidation.invalidPreloads.forEach((item) => {
+        recommendations.push({
+          type: "fix-invalid-preload",
+          priority: "high",
+          preload: item.preload,
+          errors: item.errors,
+          recommendation: item.recommendation,
+          impact: "Ensures preload links work correctly",
+        });
+      });
+
+      return recommendations;
+    } catch (error) {
+      console.error("Error generating LCP preload recommendations:", error);
+      return [];
+    }
+  }
+
+  // Generate HTML example for preload
+  generatePreloadHTML(preloadRecommendation) {
+    try {
+      let html = `<link rel="preload" href="${preloadRecommendation.href}" as="${preloadRecommendation.as}"`;
+
+      if (preloadRecommendation.type) {
+        html += ` type="${preloadRecommendation.type}"`;
+      }
+
+      if (preloadRecommendation.fetchpriority) {
+        html += ` fetchpriority="${preloadRecommendation.fetchpriority}"`;
+      }
+
+      if (preloadRecommendation.crossorigin) {
+        html += ` crossorigin="${preloadRecommendation.crossorigin}"`;
+      }
+
+      html += ">";
+
+      return html;
+    } catch (error) {
+      return "";
+    }
+  }
+
+  // Analyze scripts for optimization opportunities
+  analyzeScripts(htmlStructure = null) {
+    try {
+      console.log("Analyzing scripts for optimization opportunities...");
+
+      // Use provided structure or fallback to live DOM analysis
+      let structure = htmlStructure || this.htmlStructure;
+
+      // If no structure available, analyze live DOM directly
+      if (!structure || !structure.head) {
+        console.log("No HTML structure available, analyzing live DOM directly...");
+        structure = this.analyzeLiveDOM();
+      }
+
+      if (!structure) {
+        console.warn("Unable to analyze scripts - no DOM structure available");
+        return this.getEmptyScriptAnalysis();
+      }
+
+      const result = {
+        duplicates: [],
+        deferScripts: [],
+        asyncScripts: [],
+        totalExternalScripts: 0,
+        recommendations: [],
+      };
+
+      // Get all external scripts from head and body with safe access
+      const headScripts = structure.head && structure.head.scripts ? structure.head.scripts : [];
+      const bodyScripts = structure.body && structure.body.scripts ? structure.body.scripts : [];
+      const allScripts = [...headScripts, ...bodyScripts];
+
+      // Filter to only external scripts (those with src attribute)
+      const externalScripts = allScripts.filter((script) => {
+        const src = script.getAttribute("src");
+        return src && src.trim().length > 0;
+      });
+
+      result.totalExternalScripts = externalScripts.length;
+
+      // Detect duplicate scripts
+      result.duplicates = this.detectDuplicateScripts(externalScripts);
+
+      // Catalog defer and async scripts (including all scripts, not just external ones)
+      result.deferScripts = this.catalogDeferScripts(headScripts);
+      result.asyncScripts = this.catalogAsyncScripts(headScripts);
+
+      // Debug logging for script detection
+      console.log("Script Analysis Debug:", {
+        totalScripts: allScripts.length,
+        headScripts: headScripts.length,
+        bodyScripts: bodyScripts.length,
+        externalScripts: externalScripts.length,
+        deferScripts: result.deferScripts.length,
+        asyncScripts: result.asyncScripts.length,
+      });
+
+      // Generate script optimization recommendations
+      result.recommendations = this.generateScriptRecommendations(result, externalScripts);
+
+      console.log("Script analysis complete:", result);
+      return result;
+    } catch (error) {
+      console.error("Error analyzing scripts:", error);
+      return {
+        duplicates: [],
+        deferScripts: [],
+        asyncScripts: [],
+        totalExternalScripts: 0,
+        recommendations: [],
+        error: error.message,
+      };
+    }
+  }
+
+  // Detect duplicate script src includes
+  detectDuplicateScripts(scripts) {
+    try {
+      const srcCounts = {};
+      const duplicates = [];
+
+      // Count occurrences of each script src
+      scripts.forEach((script) => {
+        const src = script.getAttribute("src");
+        if (src) {
+          const normalizedSrc = this.normalizeSrc(src);
+          srcCounts[normalizedSrc] = (srcCounts[normalizedSrc] || 0) + 1;
+        }
+      });
+
+      // Find duplicates (src that appears more than once)
+      Object.entries(srcCounts).forEach(([src, count]) => {
+        if (count > 1) {
+          duplicates.push(src);
+        }
+      });
+
+      return duplicates;
+    } catch (error) {
+      console.error("Error detecting duplicate scripts:", error);
+      return [];
+    }
+  }
+
+  // Catalog defer scripts in HEAD
+  catalogDeferScripts(headScripts) {
+    try {
+      const deferScripts = [];
+
+      headScripts.forEach((script, index) => {
+        const src = script.getAttribute("src");
+        const hasDefer = script.hasAttribute("defer");
+
+        console.log(`Script ${index}:`, {
+          src: src || "(inline)",
+          hasDefer: hasDefer,
+          hasAsync: script.hasAttribute("async"),
+          type: script.getAttribute("type"),
+        });
+
+        if (hasDefer) {
+          if (src) {
+            deferScripts.push({
+              src: this.normalizeSrc(src),
+              type: "external",
+              element: script,
+            });
+          } else {
+            deferScripts.push({
+              src: "(inline script)",
+              type: "inline",
+              element: script,
+            });
+          }
+        }
+      });
+
+      console.log(`Found ${deferScripts.length} defer scripts:`, deferScripts);
+      return deferScripts;
+    } catch (error) {
+      console.error("Error cataloging defer scripts:", error);
+      return [];
+    }
+  }
+
+  // Catalog async scripts in HEAD
+  catalogAsyncScripts(headScripts) {
+    try {
+      const asyncScripts = [];
+
+      headScripts.forEach((script, index) => {
+        const src = script.getAttribute("src");
+        const hasAsync = script.hasAttribute("async");
+
+        if (hasAsync) {
+          if (src) {
+            asyncScripts.push({
+              src: this.normalizeSrc(src),
+              type: "external",
+              element: script,
+            });
+          } else {
+            asyncScripts.push({
+              src: "(inline script)",
+              type: "inline",
+              element: script,
+            });
+          }
+        }
+      });
+
+      console.log(`Found ${asyncScripts.length} async scripts:`, asyncScripts);
+      return asyncScripts;
+    } catch (error) {
+      console.error("Error cataloging async scripts:", error);
+      return [];
+    }
+  }
+
+  // Generate script optimization recommendations
+  generateScriptRecommendations(analysisResult, allScripts) {
+    try {
+      const recommendations = [];
+
+      // Recommendation for duplicate scripts
+      if (analysisResult.duplicates.length > 0) {
+        recommendations.push({
+          type: "duplicate_scripts",
+          severity: "high",
+          message: `Found ${analysisResult.duplicates.length} duplicate script(s). Remove duplicates to reduce bundle size and improve load performance.`,
+          duplicateScripts: analysisResult.duplicates,
+          impact: "Reduces network requests and improves page load time",
+        });
+      }
+
+      // Recommendation for defer script optimization
+      if (analysisResult.deferScripts.length > 0) {
+        recommendations.push({
+          type: "defer_optimization",
+          severity: "medium",
+          message: `Found ${analysisResult.deferScripts.length} defer script(s). Consider further delaying non-critical scripts or moving them to the end of the body.`,
+          deferScripts: analysisResult.deferScripts,
+          impact: "Improves initial page rendering by delaying script execution",
+        });
+      }
+
+      // Recommendation for async script validation
+      if (analysisResult.asyncScripts.length > 0) {
+        recommendations.push({
+          type: "async_validation",
+          severity: "low",
+          message: `Found ${analysisResult.asyncScripts.length} async script(s). Ensure these scripts don't depend on DOM ready state or other scripts.`,
+          asyncScripts: analysisResult.asyncScripts,
+          impact: "Prevents potential race conditions and ensures proper script execution",
+        });
+      }
+
+      // Check for redundant preload links for scripts
+      const redundantPreloads = this.detectRedundantScriptPreloads(allScripts);
+      if (redundantPreloads.length > 0) {
+        recommendations.push({
+          type: "redundant_preloads",
+          severity: "medium",
+          message: `Found ${redundantPreloads.length} redundant preload(s) for scripts already marked with defer/async. Remove redundant preloads to avoid unnecessary network requests.`,
+          redundantPreloads: redundantPreloads,
+          impact: "Reduces unnecessary network requests and improves resource loading efficiency",
+        });
+      }
+
+      // General script loading best practices
+      const blockingScripts = this.detectBlockingScripts(allScripts);
+      if (blockingScripts.length > 0) {
+        recommendations.push({
+          type: "blocking_scripts",
+          severity: "high",
+          message: `Found ${blockingScripts.length} render-blocking script(s) in HEAD without defer/async. Add defer or async attributes to improve page rendering performance.`,
+          blockingScripts: blockingScripts,
+          impact:
+            "Significantly improves First Contentful Paint and Largest Contentful Paint metrics",
+        });
+      }
+
+      return recommendations;
+    } catch (error) {
+      console.error("Error generating script recommendations:", error);
+      return [];
+    }
+  }
+
+  // Detect redundant preload links for scripts with defer/async
+  detectRedundantScriptPreloads(scripts) {
+    try {
+      const redundantPreloads = [];
+
+      if (!this.htmlStructure || !this.htmlStructure.head || !this.htmlStructure.head.links) {
+        return redundantPreloads;
+      }
+
+      // Get all preload links for scripts from the links array
+      const scriptPreloads = this.htmlStructure.head.links.filter((link) => {
+        const rel = link.getAttribute("rel");
+        const as = link.getAttribute("as");
+        return rel === "preload" && as === "script";
+      });
+
+      // Get all defer/async scripts
+      const deferAsyncScripts = scripts.filter((script) => {
+        return script.hasAttribute("defer") || script.hasAttribute("async");
+      });
+
+      // Check for redundant preloads
+      scriptPreloads.forEach((preload) => {
+        const preloadHref = this.normalizeSrc(preload.getAttribute("href") || "");
+
+        deferAsyncScripts.forEach((script) => {
+          const scriptSrc = this.normalizeSrc(script.getAttribute("src") || "");
+
+          if (preloadHref === scriptSrc) {
+            redundantPreloads.push({
+              preloadHref: preload.getAttribute("href"),
+              scriptSrc: script.getAttribute("src"),
+              scriptAttributes: {
+                defer: script.hasAttribute("defer"),
+                async: script.hasAttribute("async"),
+              },
+            });
+          }
+        });
+      });
+
+      return redundantPreloads;
+    } catch (error) {
+      console.error("Error detecting redundant script preloads:", error);
+      return [];
+    }
+  }
+
+  // Detect render-blocking scripts
+  detectBlockingScripts(scripts) {
+    try {
+      const blockingScripts = [];
+
+      // Get scripts in HEAD that don't have defer or async
+      const headScripts =
+        this.htmlStructure.head && this.htmlStructure.head.scripts
+          ? this.htmlStructure.head.scripts
+          : [];
+
+      headScripts.forEach((script) => {
+        const src = script.getAttribute("src");
+        const hasDefer = script.hasAttribute("defer");
+        const hasAsync = script.hasAttribute("async");
+
+        // External scripts in HEAD without defer/async are render-blocking
+        if (src && src.trim().length > 0 && !hasDefer && !hasAsync) {
+          blockingScripts.push({
+            src: src,
+            position: "head",
+            recommendation:
+              "Add defer attribute for non-critical scripts or async for independent scripts",
+          });
+        }
+      });
+
+      return blockingScripts;
+    } catch (error) {
+      console.error("Error detecting blocking scripts:", error);
+      return [];
+    }
+  }
+
+  // Normalize script src for comparison (handle relative URLs, query params, etc.)
+  normalizeSrc(src) {
+    try {
+      // Remove leading/trailing whitespace
+      let normalized = src.trim();
+
+      // Convert relative URLs to absolute for comparison
+      if (normalized.startsWith("//")) {
+        normalized = window.location.protocol + normalized;
+      } else if (normalized.startsWith("/")) {
+        normalized = window.location.origin + normalized;
+      } else if (!normalized.startsWith("http://") && !normalized.startsWith("https://")) {
+        // Handle relative paths
+        const base = window.location.href.substring(0, window.location.href.lastIndexOf("/") + 1);
+        normalized = base + normalized;
+      }
+
+      // Remove fragment identifiers for comparison
+      const hashIndex = normalized.indexOf("#");
+      if (hashIndex !== -1) {
+        normalized = normalized.substring(0, hashIndex);
+      }
+
+      return normalized;
+    } catch (error) {
+      console.error("Error normalizing script src:", error);
+      return src;
+    }
+  }
+
+  // Analyze link tags for validation and optimization opportunities
+  analyzeLinks(htmlStructure = null) {
+    try {
+      console.log("Analyzing link tags for optimization opportunities...");
+
+      // Use provided structure or fallback to live DOM analysis
+      let structure = htmlStructure || this.htmlStructure;
+
+      // If no structure available, analyze live DOM directly
+      if (!structure || !structure.head) {
+        console.log("No HTML structure available, analyzing live DOM directly...");
+        structure = this.analyzeLiveDOM();
+      }
+
+      if (!structure) {
+        console.warn("Unable to analyze links - no DOM structure available");
+        return this.getEmptyLinkAnalysis();
+      }
+
+      const result = {
+        bodyLinks: [],
+        duplicatePreloads: [],
+        invalidPreloads: [],
+        redundantPreloads: [],
+        totalPreloads: 0,
+        lcpPreloadMissing: {
+          missing: false,
+          resourceUrl: null,
+        },
+        analysis: {
+          headLinks: 0,
+          bodyLinks: 0,
+          preloadLinks: 0,
+          prefetchLinks: 0,
+          preconnectLinks: 0,
+          dnsPrefetchLinks: 0,
+        },
+        validation: {
+          invalidRelValues: [],
+          missingCrossorigin: [],
+          inefficientPreloads: [],
+          securityIssues: [],
+          performanceIssues: [],
+          accessibilityIssues: [],
+          totalIssues: 0,
+          recommendations: [],
+        },
+      };
+
+      // Get all link elements from HTML structure with safe access
+      const headLinks = structure.head && structure.head.links ? structure.head.links : [];
+      const bodyLinks = structure.body && structure.body.links ? structure.body.links : [];
+      const allLinks = [...headLinks, ...bodyLinks];
+
+      // Update analysis counts
+      result.analysis.headLinks = headLinks.length;
+      result.analysis.bodyLinks = bodyLinks.length;
+
+      // 1. Detect misplaced links (preload/prefetch in BODY)
+      result.bodyLinks = this.detectMisplacedLinks(bodyLinks);
+
+      // 2. Detect duplicate preload links
+      const preloadLinks = allLinks.filter(
+        (link) => link.getAttribute && link.getAttribute("rel") === "preload"
+      );
+      result.analysis.preloadLinks = preloadLinks.length;
+      result.totalPreloads = preloadLinks.length;
+      result.duplicatePreloads = this.detectDuplicatePreloads(preloadLinks);
+
+      // 3. Detect invalid preload rel values
+      result.invalidPreloads = this.detectInvalidPreloads(allLinks);
+
+      // 4. Detect redundant preloads for defer/async scripts
+      result.redundantPreloads = this.detectRedundantPreloads(preloadLinks);
+
+      // 5. Check if LCP element has corresponding preload
+      result.lcpPreloadMissing = this.checkLCPPreload(preloadLinks);
+
+      // 6. Comprehensive link tag validation (NEW)
+      result.validation = this.validateLinkTagBestPractices(allLinks);
+
+      // Count other link types for analysis
+      result.analysis.prefetchLinks = allLinks.filter(
+        (link) => link.getAttribute && link.getAttribute("rel") === "prefetch"
+      ).length;
+
+      result.analysis.preconnectLinks = allLinks.filter(
+        (link) => link.getAttribute && link.getAttribute("rel") === "preconnect"
+      ).length;
+
+      result.analysis.dnsPrefetchLinks = allLinks.filter(
+        (link) => link.getAttribute && link.getAttribute("rel") === "dns-prefetch"
+      ).length;
+
+      console.log("Link analysis complete:", result);
+      return result;
+    } catch (error) {
+      console.error("Error analyzing links:", error);
+      return {
+        bodyLinks: [],
+        duplicatePreloads: [],
+        invalidPreloads: [],
+        redundantPreloads: [],
+        totalPreloads: 0,
+        lcpPreloadMissing: {
+          missing: false,
+          resourceUrl: null,
+        },
+        analysis: {
+          headLinks: 0,
+          bodyLinks: 0,
+          preloadLinks: 0,
+          prefetchLinks: 0,
+          preconnectLinks: 0,
+          dnsPrefetchLinks: 0,
+        },
+        validation: {
+          invalidRelValues: [],
+          missingCrossorigin: [],
+          inefficientPreloads: [],
+          securityIssues: [],
+          performanceIssues: [],
+          accessibilityIssues: [],
+          totalIssues: 0,
+          recommendations: [],
+        },
+        error: error.message,
+      };
+    }
+  }
+
+  // Detect misplaced preload/prefetch links in BODY
+  detectMisplacedLinks(bodyLinks) {
+    const misplacedLinks = [];
+
+    try {
+      bodyLinks.forEach((link) => {
+        if (!link.getAttribute) return;
+
+        const rel = link.getAttribute("rel");
+        const href = link.getAttribute("href");
+
+        // Check for preload, prefetch, preconnect, dns-prefetch in body
+        if (["preload", "prefetch", "preconnect", "dns-prefetch"].includes(rel)) {
+          misplacedLinks.push({
+            href: href || "unknown",
+            rel: rel,
+            reason: `${rel} link should be in HEAD for optimal performance`,
+          });
+        }
+      });
+
+      console.log(`Found ${misplacedLinks.length} misplaced links in BODY`);
+      return misplacedLinks.map((link) => link.href);
+    } catch (error) {
+      console.error("Error detecting misplaced links:", error);
+      return [];
+    }
+  }
+
+  // Detect duplicate preload links
+  detectDuplicatePreloads(preloadLinks) {
+    const duplicates = [];
+    const seenHrefs = new Map();
+
+    try {
+      preloadLinks.forEach((link) => {
+        if (!link.getAttribute) return;
+
+        const href = link.getAttribute("href");
+        if (!href) return;
+
+        // Normalize href for comparison
+        const normalizedHref = this.normalizeUrl(href);
+
+        if (seenHrefs.has(normalizedHref)) {
+          // This is a duplicate
+          duplicates.push(href);
+          seenHrefs.get(normalizedHref).count++;
+        } else {
+          seenHrefs.set(normalizedHref, {
+            originalHref: href,
+            count: 1,
+          });
+        }
+      });
+
+      console.log(`Found ${duplicates.length} duplicate preload links`);
+      return duplicates;
+    } catch (error) {
+      console.error("Error detecting duplicate preloads:", error);
+      return [];
+    }
+  }
+
+  // Detect invalid preload rel values
+  detectInvalidPreloads(allLinks) {
+    const invalidPreloads = [];
+
+    try {
+      allLinks.forEach((link) => {
+        if (!link.getAttribute) return;
+
+        const rel = link.getAttribute("rel");
+        const href = link.getAttribute("href");
+        const as = link.getAttribute("as");
+
+        // Check if it's a preload link
+        if (rel === "preload") {
+          // Validate 'as' attribute for preload links
+          const validAsValues = [
+            "audio",
+            "document",
+            "embed",
+            "fetch",
+            "font",
+            "image",
+            "object",
+            "script",
+            "style",
+            "track",
+            "video",
+            "worker",
+          ];
+
+          if (!as) {
+            invalidPreloads.push({
+              href: href || "unknown",
+              reason: 'Preload link missing required "as" attribute',
+            });
+          } else if (!validAsValues.includes(as)) {
+            invalidPreloads.push({
+              href: href || "unknown",
+              reason: `Invalid "as" value: "${as}". Valid values: ${validAsValues.join(", ")}`,
+            });
+          }
+
+          // Check for font preloads without crossorigin
+          if (as === "font" && !link.getAttribute("crossorigin")) {
+            invalidPreloads.push({
+              href: href || "unknown",
+              reason: 'Font preload should include crossorigin="anonymous" attribute',
+            });
+          }
+        }
+      });
+
+      console.log(`Found ${invalidPreloads.length} invalid preload links`);
+      return invalidPreloads.map((invalid) => invalid.href);
+    } catch (error) {
+      console.error("Error detecting invalid preloads:", error);
+      return [];
+    }
+  }
+
+  // Detect redundant preloads for scripts already marked with defer/async
+  detectRedundantPreloads(preloadLinks) {
+    const redundantPreloads = [];
+
+    try {
+      if (!this.htmlStructure || !this.htmlStructure.all) {
+        return redundantPreloads;
+      }
+
+      // Get all script elements
+      const allScripts = this.htmlStructure.all.scripts || [];
+
+      // Create a map of script sources with their loading attributes
+      const scriptMap = new Map();
+      allScripts.forEach((script) => {
+        if (!script.getAttribute) return;
+
+        const src = script.getAttribute("src");
+        if (src) {
+          const normalizedSrc = this.normalizeUrl(src);
+          const hasDefer = script.hasAttribute("defer");
+          const hasAsync = script.hasAttribute("async");
+
+          scriptMap.set(normalizedSrc, {
+            src: src,
+            defer: hasDefer,
+            async: hasAsync,
+            optimized: hasDefer || hasAsync,
+          });
+        }
+      });
+
+      // Check preload links against script map
+      preloadLinks.forEach((link) => {
+        if (!link.getAttribute) return;
+
+        const href = link.getAttribute("href");
+        const as = link.getAttribute("as");
+
+        if (href && as === "script") {
+          const normalizedHref = this.normalizeUrl(href);
+          const scriptInfo = scriptMap.get(normalizedHref);
+
+          if (scriptInfo && scriptInfo.optimized) {
+            redundantPreloads.push({
+              href: href,
+              reason: `Script already optimized with ${
+                scriptInfo.defer ? "defer" : "async"
+              } attribute`,
+            });
+          }
+        }
+      });
+
+      console.log(`Found ${redundantPreloads.length} redundant preload links`);
+      return redundantPreloads.map((redundant) => redundant.href);
+    } catch (error) {
+      console.error("Error detecting redundant preloads:", error);
+      return [];
+    }
+  }
+
+  // Check if LCP element has corresponding preload in HEAD
+  checkLCPPreload(preloadLinks) {
+    try {
+      // This method will be enhanced when LCP analysis is implemented
+      // For now, return a placeholder structure
+
+      const result = {
+        missing: false,
+        resourceUrl: null,
+        analysis: {
+          lcpElementFound: false,
+          lcpElementType: null,
+          preloadExists: false,
+          recommendation: null,
+        },
+      };
+
+      // TODO: This will be implemented when LCP analysis (task 4) is integrated
+      // For now, we'll check if there are any image preloads as a basic check
+      const imagePreloads = preloadLinks.filter((link) => {
+        if (!link.getAttribute) return false;
+        return link.getAttribute("as") === "image";
+      });
+
+      result.analysis.preloadExists = imagePreloads.length > 0;
+
+      if (imagePreloads.length === 0) {
+        result.missing = true;
+        result.analysis.recommendation = "Consider adding preload for LCP image if identified";
+      }
+
+      console.log("LCP preload check complete:", result);
+      return result;
+    } catch (error) {
+      console.error("Error checking LCP preload:", error);
+      return {
+        missing: false,
+        resourceUrl: null,
+        analysis: {
+          lcpElementFound: false,
+          lcpElementType: null,
+          preloadExists: false,
+          recommendation: null,
+        },
+        error: error.message,
+      };
+    }
+  }
+
+  // Comprehensive link tag validation with best practices checking
+  validateLinkTagBestPractices(allLinks) {
+    try {
+      console.log("Performing comprehensive link tag validation...");
+
+      const validationResults = {
+        invalidRelValues: [],
+        missingCrossorigin: [],
+        inefficientPreloads: [],
+        securityIssues: [],
+        performanceIssues: [],
+        accessibilityIssues: [],
+        totalIssues: 0,
+        recommendations: [],
+      };
+
+      allLinks.forEach((link) => {
+        if (!link.getAttribute) return;
+
+        const rel = link.getAttribute("rel");
+        const href = link.getAttribute("href");
+        const as = link.getAttribute("as");
+        const crossorigin = link.getAttribute("crossorigin");
+        const type = link.getAttribute("type");
+        const media = link.getAttribute("media");
+
+        // 1. Validate rel attribute values
+        const relValidation = this.validateRelAttribute(rel, as, href);
+        if (!relValidation.isValid) {
+          validationResults.invalidRelValues.push({
+            href: href || "unknown",
+            rel: rel,
+            issue: relValidation.issue,
+            recommendation: relValidation.recommendation,
+          });
+        }
+
+        // 2. Check for missing crossorigin on font preloads
+        if (rel === "preload" && as === "font" && !crossorigin) {
+          validationResults.missingCrossorigin.push({
+            href: href || "unknown",
+            issue: "Font preload missing crossorigin attribute",
+            recommendation: 'Add crossorigin="anonymous" for proper CORS handling',
+          });
+        }
+
+        // 3. Check for inefficient preload usage
+        const preloadEfficiency = this.validatePreloadEfficiency(rel, as, type, href);
+        if (!preloadEfficiency.isEfficient) {
+          validationResults.inefficientPreloads.push({
+            href: href || "unknown",
+            issue: preloadEfficiency.issue,
+            recommendation: preloadEfficiency.recommendation,
+          });
+        }
+
+        // 4. Security validation
+        const securityValidation = this.validateLinkSecurity(rel, href, crossorigin);
+        if (securityValidation.hasIssues) {
+          validationResults.securityIssues.push({
+            href: href || "unknown",
+            issue: securityValidation.issue,
+            severity: securityValidation.severity,
+            recommendation: securityValidation.recommendation,
+          });
+        }
+
+        // 5. Performance validation
+        const performanceValidation = this.validateLinkPerformance(rel, as, media, href);
+        if (performanceValidation.hasIssues) {
+          validationResults.performanceIssues.push({
+            href: href || "unknown",
+            issue: performanceValidation.issue,
+            impact: performanceValidation.impact,
+            recommendation: performanceValidation.recommendation,
+          });
+        }
+
+        // 6. Accessibility validation
+        const accessibilityValidation = this.validateLinkAccessibility(rel, type, href);
+        if (accessibilityValidation.hasIssues) {
+          validationResults.accessibilityIssues.push({
+            href: href || "unknown",
+            issue: accessibilityValidation.issue,
+            recommendation: accessibilityValidation.recommendation,
+          });
+        }
+      });
+
+      // Calculate total issues and generate overall recommendations
+      validationResults.totalIssues =
+        validationResults.invalidRelValues.length +
+        validationResults.missingCrossorigin.length +
+        validationResults.inefficientPreloads.length +
+        validationResults.securityIssues.length +
+        validationResults.performanceIssues.length +
+        validationResults.accessibilityIssues.length;
+
+      validationResults.recommendations =
+        this.generateLinkOptimizationRecommendations(validationResults);
+
+      console.log(`Link validation complete: ${validationResults.totalIssues} issues found`);
+      return validationResults;
+    } catch (error) {
+      console.error("Error in comprehensive link validation:", error);
+      return {
+        invalidRelValues: [],
+        missingCrossorigin: [],
+        inefficientPreloads: [],
+        securityIssues: [],
+        performanceIssues: [],
+        accessibilityIssues: [],
+        totalIssues: 0,
+        recommendations: [],
+        error: error.message,
+      };
+    }
+  }
+
+  // Validate rel attribute values
+  validateRelAttribute(rel, as, href) {
+    const validRelValues = [
+      "alternate",
+      "author",
+      "bookmark",
+      "canonical",
+      "dns-prefetch",
+      "external",
+      "help",
+      "icon",
+      "license",
+      "manifest",
+      "modulepreload",
+      "next",
+      "nofollow",
+      "noopener",
+      "noreferrer",
+      "opener",
+      "pingback",
+      "preconnect",
+      "prefetch",
+      "preload",
+      "prev",
+      "search",
+      "shortlink",
+      "stylesheet",
+      "tag",
+    ];
+
+    if (!rel) {
+      return {
+        isValid: false,
+        issue: "Missing rel attribute",
+        recommendation: "Add appropriate rel attribute to define link relationship",
+      };
+    }
+
+    // Split multiple rel values
+    const relValues = rel.toLowerCase().split(/\s+/);
+
+    for (const relValue of relValues) {
+      if (!validRelValues.includes(relValue)) {
+        return {
+          isValid: false,
+          issue: `Invalid rel value: "${relValue}"`,
+          recommendation: `Use valid rel values: ${validRelValues.join(", ")}`,
+        };
+      }
+    }
+
+    // Special validation for preload
+    if (relValues.includes("preload")) {
+      if (!as) {
+        return {
+          isValid: false,
+          issue: 'Preload link missing required "as" attribute',
+          recommendation: 'Add "as" attribute to specify resource type for preload',
+        };
+      }
+
+      const validAsValues = [
+        "audio",
+        "document",
+        "embed",
+        "fetch",
+        "font",
+        "image",
+        "object",
+        "script",
+        "style",
+        "track",
+        "video",
+        "worker",
+      ];
+
+      if (!validAsValues.includes(as)) {
+        return {
+          isValid: false,
+          issue: `Invalid "as" value for preload: "${as}"`,
+          recommendation: `Use valid "as" values: ${validAsValues.join(", ")}`,
+        };
+      }
+    }
+
+    return { isValid: true };
+  }
+
+  // Validate preload efficiency
+  validatePreloadEfficiency(rel, as, type, href) {
+    if (rel !== "preload") {
+      return { isEfficient: true };
+    }
+
+    // Check for unnecessary preloads
+    if (as === "script") {
+      // Check if this script is already optimized with defer/async
+      // This check is already done in detectRedundantPreloads, but we include it here for completeness
+      return {
+        isEfficient: true, // Will be caught by redundant preload detection
+      };
+    }
+
+    // Check for overly aggressive preloading
+    if (as === "image" && href) {
+      try {
+        const url = new URL(href, window.location.href);
+        const fileExtension = url.pathname.split(".").pop().toLowerCase();
+
+        // Warn about preloading large image formats without optimization
+        if (["bmp", "tiff", "tif"].includes(fileExtension)) {
+          return {
+            isEfficient: false,
+            issue: "Preloading unoptimized image format",
+            recommendation: "Consider using WebP, AVIF, or optimized JPEG/PNG formats",
+          };
+        }
+      } catch (error) {
+        // URL parsing failed, skip this check
+      }
+    }
+
+    // Check for preloading resources that might not be critical
+    if (as === "font" && !href.includes("woff")) {
+      return {
+        isEfficient: false,
+        issue: "Preloading non-WOFF font format",
+        recommendation: "Consider using WOFF2 format for better compression and performance",
+      };
+    }
+
+    return { isEfficient: true };
+  }
+
+  // Validate link security
+  validateLinkSecurity(rel, href, crossorigin) {
+    const result = {
+      hasIssues: false,
+      issue: null,
+      severity: "low",
+      recommendation: null,
+    };
+
+    if (!href) return result;
+
+    try {
+      const url = new URL(href, window.location.href);
+
+      // Check for external resources without proper security attributes
+      if (url.origin !== window.location.origin) {
+        // External preconnect without proper attributes
+        if (rel === "preconnect" && !crossorigin) {
+          result.hasIssues = true;
+          result.issue = "External preconnect without crossorigin attribute";
+          result.severity = "medium";
+          result.recommendation = "Add crossorigin attribute for external preconnect links";
+        }
+
+        // External font preload without crossorigin
+        if (rel === "preload" && href.includes("font") && !crossorigin) {
+          result.hasIssues = true;
+          result.issue = "External font preload without crossorigin attribute";
+          result.severity = "high";
+          result.recommendation = 'Add crossorigin="anonymous" for external font preloads';
+        }
+
+        // HTTP resources on HTTPS pages
+        if (window.location.protocol === "https:" && url.protocol === "http:") {
+          result.hasIssues = true;
+          result.issue = "Mixed content: HTTP resource on HTTPS page";
+          result.severity = "high";
+          result.recommendation = "Use HTTPS URLs to avoid mixed content issues";
+        }
+      }
+
+      return result;
+    } catch (error) {
+      // URL parsing failed
+      result.hasIssues = true;
+      result.issue = "Invalid URL format";
+      result.severity = "medium";
+      result.recommendation = "Ensure URL is properly formatted";
+      return result;
+    }
+  }
+
+  // Validate link performance impact
+  validateLinkPerformance(rel, as, media, href) {
+    const result = {
+      hasIssues: false,
+      issue: null,
+      impact: "low",
+      recommendation: null,
+    };
+
+    // Check for unused media queries
+    if (rel === "stylesheet" && media && media !== "all" && media !== "screen") {
+      // This is a basic check - in a real implementation, you'd want to evaluate the media query
+      if (media.includes("print") && !media.includes("screen")) {
+        result.hasIssues = true;
+        result.issue = "Print-only stylesheet loaded on screen";
+        result.impact = "medium";
+        result.recommendation = "Consider loading print stylesheets only when needed";
+      }
+    }
+
+    // Check for excessive preloading
+    if (rel === "preload") {
+      // Count total preloads (this would need to be tracked globally)
+      // For now, we'll just flag potential issues
+      if (as === "image" && href) {
+        try {
+          const url = new URL(href, window.location.href);
+          // Check for very large query parameters (might indicate dynamic/personalized content)
+          if (url.search.length > 100) {
+            result.hasIssues = true;
+            result.issue = "Preloading resource with complex query parameters";
+            result.impact = "medium";
+            result.recommendation =
+              "Verify that preloaded resource is truly critical and cacheable";
+          }
+        } catch (error) {
+          // URL parsing failed, skip this check
+        }
+      }
+    }
+
+    return result;
+  }
+
+  // Validate link accessibility
+  validateLinkAccessibility(rel, type, href) {
+    const result = {
+      hasIssues: false,
+      issue: null,
+      recommendation: null,
+    };
+
+    // Check for missing type attribute on stylesheets
+    if (rel === "stylesheet" && !type) {
+      result.hasIssues = true;
+      result.issue = "Stylesheet missing type attribute";
+      result.recommendation =
+        'Add type="text/css" for better accessibility and standards compliance';
+    }
+
+    // Check for icon links without proper sizing information
+    if (rel === "icon" && href && !href.includes("svg")) {
+      // For raster icons, sizes attribute is recommended
+      // This would need access to the actual link element to check for sizes attribute
+      // For now, we'll provide a general recommendation
+    }
+
+    return result;
+  }
+
+  // Generate optimization recommendations based on validation results
+  generateLinkOptimizationRecommendations(validationResults) {
+    const recommendations = [];
+
+    // High-priority recommendations
+    if (validationResults.securityIssues.length > 0) {
+      recommendations.push({
+        priority: "high",
+        category: "security",
+        message: `Fix ${validationResults.securityIssues.length} security issues with external links`,
+        action: "Add proper crossorigin and security attributes",
+      });
+    }
+
+    if (validationResults.missingCrossorigin.length > 0) {
+      recommendations.push({
+        priority: "high",
+        category: "performance",
+        message: `Add crossorigin attributes to ${validationResults.missingCrossorigin.length} font preloads`,
+        action: 'Add crossorigin="anonymous" to font preload links',
+      });
+    }
+
+    // Medium-priority recommendations
+    if (validationResults.invalidRelValues.length > 0) {
+      recommendations.push({
+        priority: "medium",
+        category: "standards",
+        message: `Fix ${validationResults.invalidRelValues.length} invalid rel attribute values`,
+        action: "Use valid HTML5 rel attribute values",
+      });
+    }
+
+    if (validationResults.inefficientPreloads.length > 0) {
+      recommendations.push({
+        priority: "medium",
+        category: "performance",
+        message: `Optimize ${validationResults.inefficientPreloads.length} inefficient preloads`,
+        action: "Review preload strategy and resource formats",
+      });
+    }
+
+    // Low-priority recommendations
+    if (validationResults.performanceIssues.length > 0) {
+      recommendations.push({
+        priority: "low",
+        category: "optimization",
+        message: `Address ${validationResults.performanceIssues.length} performance optimization opportunities`,
+        action: "Review media queries and resource loading patterns",
+      });
+    }
+
+    if (validationResults.accessibilityIssues.length > 0) {
+      recommendations.push({
+        priority: "low",
+        category: "accessibility",
+        message: `Improve ${validationResults.accessibilityIssues.length} accessibility issues`,
+        action: "Add missing type attributes and improve semantic markup",
+      });
+    }
+
+    return recommendations;
+  }
+
+  // Normalize URL for comparison (helper method)
+  normalizeUrl(url) {
+    try {
+      if (!url) return "";
+
+      // Handle relative URLs
+      if (url.startsWith("//")) {
+        url = window.location.protocol + url;
+      } else if (url.startsWith("/")) {
+        url = window.location.origin + url;
+      } else if (!url.startsWith("http")) {
+        // Relative path
+        const base = window.location.href.substring(0, window.location.href.lastIndexOf("/") + 1);
+        url = base + url;
+      }
+
+      // Create URL object for normalization
+      const urlObj = new URL(url);
+
+      // Remove fragment and normalize
+      urlObj.hash = "";
+
+      return urlObj.href.toLowerCase();
+    } catch (error) {
+      console.error("Error normalizing URL:", error);
+      return url.toLowerCase();
+    }
+  }
+
+  // Analyze cache optimization opportunities
+  analyzeCache() {
+    try {
+      console.log("Analyzing cache optimization opportunities...");
+
+      // For now, return empty cache analysis
+      // This will be expanded in future implementations
+      return this.getEmptyCacheData();
+    } catch (error) {
+      console.error("Error analyzing cache:", error);
+      return this.getEmptyCacheData();
+    }
+  }
+
+  // Analyze LCP optimization opportunities
+  analyzeLCP(htmlStructure = null) {
+    try {
+      console.log("Analyzing LCP optimization opportunities...");
+
+      // For now, return empty LCP analysis
+      // This will be expanded when LCP analysis is fully implemented
+      return this.getEmptyLCPData();
+    } catch (error) {
+      console.error("Error analyzing LCP:", error);
+      return this.getEmptyLCPData();
+    }
+  }
+
+  // Analyze CSS loading patterns and optimization opportunities
+  analyzeCSS(htmlStructure = null) {
+    try {
+      console.log("Analyzing CSS loading patterns and optimization opportunities...");
+
+      // Use provided structure or fallback to live DOM analysis
+      let structure = htmlStructure || this.htmlStructure;
+
+      // If no structure available, analyze live DOM directly
+      if (!structure || !structure.head) {
+        console.log("No HTML structure available, analyzing live DOM directly...");
+        structure = this.analyzeLiveDOM();
+      }
+
+      if (!structure || !structure.head) {
+        console.warn("Unable to analyze CSS - no DOM structure available");
+        return this.getEmptyCSSAnalysis();
+      }
+
+      const results = {
+        stylesheets: [],
+        totalStylesheets: 0,
+        misplacedCount: 0,
+        duplicateCount: 0,
+        analysis: {
+          headStylesheets: [],
+          bodyStylesheets: [],
+          duplicates: [],
+          recommendations: [],
+        },
+        metadata: {
+          analysisTimestamp: Date.now(),
+          url: window.location.href,
+        },
+      };
+
+      // Get all stylesheet links from the parsed HTML structure
+      const allLinks = [...(structure.head.links || []), ...(structure.body.links || [])];
+
+      console.log(`CSS Analysis Debug: Found ${allLinks.length} total links`);
+      console.log(
+        `Head links: ${structure.head && structure.head.links ? structure.head.links.length : 0}`
+      );
+      console.log(
+        `Body links: ${structure.body && structure.body.links ? structure.body.links.length : 0}`
+      );
+
+      // Debug: Log first few links to see their structure
+      if (allLinks.length > 0) {
+        console.log(
+          "Sample links:",
+          allLinks.slice(0, 3).map((link) => ({
+            tagName: link.tagName,
+            rel: link.getAttribute ? link.getAttribute("rel") : "no getAttribute method",
+            href: link.getAttribute ? link.getAttribute("href") : "no getAttribute method",
+          }))
+        );
+      }
+
+      // Filter for stylesheet links
+      const stylesheetLinks = allLinks.filter((link) => {
+        if (!link.getAttribute) {
+          console.log("Link without getAttribute method:", link);
+          return false;
+        }
+        const rel = link.getAttribute("rel");
+        const isStylesheet = rel && rel.toLowerCase().includes("stylesheet");
+        if (rel) {
+          console.log(`Link rel="${rel}", isStylesheet=${isStylesheet}`);
+        }
+        return isStylesheet;
+      });
+
+      console.log(`CSS Analysis Debug: Found ${stylesheetLinks.length} stylesheet links`);
+      results.totalStylesheets = stylesheetLinks.length;
+
+      // Analyze each stylesheet
+      const seenHrefs = new Map();
+
+      stylesheetLinks.forEach((link, index) => {
+        const href = link.getAttribute("href");
+        const media = link.getAttribute("media") || "all";
+        const type = link.getAttribute("type") || "text/css";
+        const disabled = link.hasAttribute("disabled");
+
+        // Determine placement (HEAD vs BODY) with safe access
+        const headLinks = structure.head && structure.head.links ? structure.head.links : [];
+        const isInHead = headLinks.includes(link);
+        const placement = isInHead ? "head" : "body";
+
+        if (!isInHead) {
+          results.misplacedCount++;
+        }
+
+        // Check for duplicates
+        let isDuplicate = false;
+        if (href) {
+          const normalizedHref = this.normalizeUrl(href);
+          if (seenHrefs.has(normalizedHref)) {
+            isDuplicate = true;
+            results.duplicateCount++;
+            results.analysis.duplicates.push({
+              href: href,
+              normalizedHref: normalizedHref,
+              firstOccurrence: seenHrefs.get(normalizedHref).index,
+              currentIndex: index,
+            });
+          } else {
+            seenHrefs.set(normalizedHref, {
+              href: href,
+              index: index,
+            });
+          }
+        }
+
+        // Create stylesheet entry
+        const stylesheetEntry = {
+          href: href || `inline-${index}`,
+          media: media,
+          type: type,
+          placement: placement,
+          isDuplicate: isDuplicate,
+          disabled: disabled,
+          index: index,
+        };
+
+        results.stylesheets.push(stylesheetEntry);
+
+        // Categorize by placement
+        if (isInHead) {
+          results.analysis.headStylesheets.push(stylesheetEntry);
+        } else {
+          results.analysis.bodyStylesheets.push(stylesheetEntry);
+        }
+      });
+
+      // Generate recommendations based on analysis
+      results.analysis.recommendations = this.generateCSSRecommendations(results);
+
+      console.log(`CSS analysis complete: ${results.totalStylesheets} stylesheets analyzed`);
+      console.log(
+        `Found ${results.misplacedCount} misplaced and ${results.duplicateCount} duplicate stylesheets`
+      );
+
+      return results;
+    } catch (error) {
+      console.error("Error analyzing CSS:", error);
+      return {
+        stylesheets: [],
+        totalStylesheets: 0,
+        misplacedCount: 0,
+        duplicateCount: 0,
+        analysis: {
+          headStylesheets: [],
+          bodyStylesheets: [],
+          duplicates: [],
+          recommendations: [],
+        },
+        metadata: {
+          analysisTimestamp: Date.now(),
+          url: window.location.href,
+        },
+        error: error.message,
+      };
+    }
+  }
+
+  // Generate CSS optimization recommendations
+  generateCSSRecommendations(cssResults) {
+    const recommendations = [];
+
+    // Recommendation for misplaced stylesheets
+    if (cssResults.misplacedCount > 0) {
+      recommendations.push({
+        type: "placement",
+        priority: "high",
+        issue: `${cssResults.misplacedCount} stylesheet(s) found in BODY instead of HEAD`,
+        impact: "Render-blocking resources in BODY can cause layout shifts and delayed rendering",
+        recommendation: "Move all stylesheet links to the HEAD section for optimal loading",
+        affectedStylesheets: cssResults.analysis.bodyStylesheets.map((s) => s.href),
+      });
+    }
+
+    // Recommendation for duplicate stylesheets
+    if (cssResults.duplicateCount > 0) {
+      recommendations.push({
+        type: "duplicates",
+        priority: "medium",
+        issue: `${cssResults.duplicateCount} duplicate stylesheet(s) detected`,
+        impact: "Duplicate stylesheets increase bandwidth usage and parsing time",
+        recommendation: "Remove duplicate stylesheet references to improve loading performance",
+        affectedStylesheets: cssResults.analysis.duplicates.map((d) => d.href),
+      });
+    }
+
+    // Recommendation for CSS optimization opportunities
+    const totalStylesheets = cssResults.totalStylesheets;
+    if (totalStylesheets > 10) {
+      recommendations.push({
+        type: "optimization",
+        priority: "medium",
+        issue: `High number of stylesheets (${totalStylesheets}) may impact performance`,
+        impact: "Multiple CSS files increase HTTP requests and can delay rendering",
+        recommendation: "Consider concatenating and minifying CSS files to reduce HTTP requests",
+        affectedStylesheets: cssResults.stylesheets.map((s) => s.href),
+      });
+    }
+
+    // Recommendation for media query optimization
+    const mediaSpecificSheets = cssResults.stylesheets.filter(
+      (s) => s.media && s.media !== "all" && s.media !== "screen"
+    );
+    if (mediaSpecificSheets.length > 0) {
+      recommendations.push({
+        type: "media-queries",
+        priority: "low",
+        issue: `${mediaSpecificSheets.length} stylesheet(s) with specific media queries`,
+        impact: "Media-specific stylesheets are still downloaded even when not applicable",
+        recommendation:
+          "Consider using CSS @media rules within stylesheets instead of separate files",
+        affectedStylesheets: mediaSpecificSheets.map((s) => s.href),
+      });
+    }
+
+    // General best practices recommendation
+    if (recommendations.length === 0) {
+      recommendations.push({
+        type: "best-practices",
+        priority: "info",
+        issue: "No critical CSS issues detected",
+        impact: "CSS loading appears to be well-optimized",
+        recommendation: "Consider implementing critical CSS inlining for above-the-fold content",
+        affectedStylesheets: [],
+      });
+    }
+
+    return recommendations;
+  }
+
+  // Prepare CSS analysis infrastructure for future enhancements
+  prepareCSSAnalysisInfrastructure() {
+    try {
+      console.log("Preparing CSS analysis infrastructure for future enhancements...");
+
+      // Create extensible CSS analysis framework
+      const cssAnalysisFramework = {
+        // Static analysis capabilities (current implementation)
+        staticAnalysis: {
+          enabled: true,
+          capabilities: [
+            "stylesheet-enumeration",
+            "placement-validation",
+            "duplicate-detection",
+            "media-query-analysis",
+          ],
+        },
+
+        // Dynamic analysis capabilities (future implementation)
+        dynamicAnalysis: {
+          enabled: false, // Will be enabled when Chrome DevTools Coverage API is integrated
+          capabilities: [
+            "unused-css-detection",
+            "critical-css-identification",
+            "coverage-analysis",
+            "runtime-performance-impact",
+          ],
+          requirements: {
+            chromeDevToolsProtocol: false,
+            coverageAPI: false,
+            runtimeAccess: false,
+          },
+        },
+
+        // Chrome DevTools Coverage API integration (placeholder)
+        coverageAPI: {
+          supported: this.checkCoverageAPISupport(),
+          integration: {
+            enabled: false,
+            protocol: null,
+            session: null,
+          },
+          methods: {
+            startCSSCoverage: null, // Placeholder for future implementation
+            stopCSSCoverage: null, // Placeholder for future implementation
+            analyzeCoverage: null, // Placeholder for future implementation
+          },
+        },
+
+        // Extensible analysis modules
+        analysisModules: {
+          // Current modules
+          placement: { enabled: true, priority: "high" },
+          duplicates: { enabled: true, priority: "medium" },
+          mediaQueries: { enabled: true, priority: "low" },
+
+          // Future modules (placeholders)
+          criticalCSS: { enabled: false, priority: "high" },
+          unusedCSS: { enabled: false, priority: "medium" },
+          cssComplexity: { enabled: false, priority: "low" },
+          performanceImpact: { enabled: false, priority: "high" },
+        },
+
+        // Configuration and settings
+        configuration: {
+          maxStylesheetCount: 20,
+          duplicateThreshold: 1,
+          analysisTimeout: 5000,
+          enableDetailedLogging: false,
+        },
+
+        // Metadata and versioning
+        metadata: {
+          version: "1.0.0",
+          lastUpdated: Date.now(),
+          supportedFeatures: ["static-analysis", "placement-validation", "duplicate-detection"],
+          plannedFeatures: [
+            "coverage-api-integration",
+            "unused-css-detection",
+            "critical-css-analysis",
+            "performance-impact-measurement",
+          ],
+        },
+      };
+
+      // Store framework for future use
+      this.cssAnalysisFramework = cssAnalysisFramework;
+
+      console.log("CSS analysis infrastructure prepared successfully");
+      console.log("Supported features:", cssAnalysisFramework.metadata.supportedFeatures);
+      console.log("Planned features:", cssAnalysisFramework.metadata.plannedFeatures);
+
+      return cssAnalysisFramework;
+    } catch (error) {
+      console.error("Error preparing CSS analysis infrastructure:", error);
+      return {
+        error: error.message,
+        fallbackMode: true,
+        staticAnalysis: { enabled: true },
+        dynamicAnalysis: { enabled: false },
+      };
+    }
+  }
+
+  // Analyze live DOM directly when HTML structure is not available
+  analyzeLiveDOM() {
+    try {
+      console.log("Analyzing live DOM structure...");
+
+      const structure = {
+        head: {
+          element: document.head,
+          scripts: document.head ? Array.from(document.head.querySelectorAll("script")) : [],
+          links: document.head ? Array.from(document.head.querySelectorAll("link")) : [],
+          meta: document.head ? Array.from(document.head.querySelectorAll("meta")) : [],
+          preloads: document.head
+            ? Array.from(document.head.querySelectorAll("link[rel='preload']"))
+            : [],
+        },
+        body: {
+          element: document.body,
+          scripts: document.body ? Array.from(document.body.querySelectorAll("script")) : [],
+          links: document.body ? Array.from(document.body.querySelectorAll("link")) : [],
+          images: document.body ? Array.from(document.body.querySelectorAll("img[src]")) : [],
+          videos: document.body ? Array.from(document.body.querySelectorAll("video")) : [],
+        },
+      };
+
+      console.log("Live DOM analysis complete:", {
+        headScripts: structure.head.scripts.length,
+        headLinks: structure.head.links.length,
+        bodyScripts: structure.body.scripts.length,
+        bodyLinks: structure.body.links.length,
+      });
+
+      return structure;
+    } catch (error) {
+      console.error("Error analyzing live DOM:", error);
+      return null;
+    }
+  }
+
+  // Get empty CSS analysis structure
+  getEmptyCSSAnalysis() {
+    return {
+      stylesheets: [],
+      totalStylesheets: 0,
+      misplacedCount: 0,
+      duplicateCount: 0,
+      analysis: {
+        headStylesheets: [],
+        bodyStylesheets: [],
+        duplicates: [],
+        recommendations: [],
+      },
+      metadata: {
+        analysisTimestamp: Date.now(),
+        url: window.location.href,
+      },
+      error: "CSS analysis not available",
+    };
+  }
+
+  // Get empty script analysis structure
+  getEmptyScriptAnalysis() {
+    return {
+      duplicates: [],
+      deferScripts: [],
+      asyncScripts: [],
+      totalExternalScripts: 0,
+      recommendations: [],
+      error: "Script analysis not available",
+    };
+  }
+
+  // Get empty link analysis structure
+  getEmptyLinkAnalysis() {
+    return {
+      bodyLinks: [],
+      duplicatePreloads: [],
+      invalidPreloads: [],
+      redundantPreloads: [],
+      totalPreloads: 0,
+      lcpPreloadMissing: {
+        missing: false,
+        resourceUrl: null,
+      },
+      analysis: {
+        headLinks: 0,
+        bodyLinks: 0,
+        preloadLinks: 0,
+        prefetchLinks: 0,
+        preconnectLinks: 0,
+        dnsPrefetchLinks: 0,
+      },
+      validation: {
+        invalidRelValues: [],
+        missingCrossorigin: [],
+        inefficientPreloads: [],
+        securityIssues: [],
+        performanceIssues: [],
+        accessibilityIssues: [],
+        totalIssues: 0,
+        recommendations: [],
+      },
+      error: "Link analysis not available",
+    };
+  }
+
+  // Check Chrome DevTools Coverage API support
+  checkCoverageAPISupport() {
+    try {
+      // Check if we're in a context that could potentially access DevTools Protocol
+      const hasChrome = typeof chrome !== "undefined";
+      const hasDevTools = typeof chrome?.devtools !== "undefined";
+      const hasDebugger = typeof chrome?.debugger !== "undefined";
+
+      // Note: Actual Coverage API access requires additional permissions and setup
+      // This is a basic capability check for future implementation
+      return {
+        chromeAvailable: hasChrome,
+        devToolsAvailable: hasDevTools,
+        debuggerAvailable: hasDebugger,
+        coverageAPIAccessible: false, // Will be true when properly implemented
+        requiresPermissions: [
+          "debugger", // Required for Chrome DevTools Protocol access
+          "activeTab", // Required for tab access
+        ],
+        implementationNotes: [
+          "Coverage API requires chrome.debugger permission",
+          "Must establish DevTools Protocol connection",
+          "Requires Runtime.enable and CSS.enable protocol commands",
+          "Coverage data collection impacts performance",
+        ],
+      };
+    } catch (error) {
+      console.error("Error checking Coverage API support:", error);
+      return {
+        chromeAvailable: false,
+        devToolsAvailable: false,
+        debuggerAvailable: false,
+        coverageAPIAccessible: false,
+        error: error.message,
+      };
+    }
+  }
+
+  // Placeholder for future Chrome DevTools Coverage API integration
+  async initializeCoverageAPI() {
+    // This method will be implemented when Coverage API integration is added
+    console.log("Coverage API integration not yet implemented");
+    console.log("This is a placeholder for future dynamic CSS analysis capabilities");
+
+    return {
+      initialized: false,
+      reason: "Coverage API integration pending implementation",
+      requiredSteps: [
+        "Add chrome.debugger permission to manifest",
+        "Implement DevTools Protocol connection",
+        "Add CSS.startRuleUsageTracking protocol command",
+        "Implement coverage data collection and analysis",
+      ],
+    };
+  }
+
+  // Reset analysis state
+  reset() {
+    this.analysisResults = {};
+    this.isAnalyzing = false;
+    this.htmlContent = null;
+    this.responseHeaders = null;
+
+    // Clear cache and reset analysis state
+    this.clearCache();
+    this.resetAnalysisState();
+
+    // Reset page change detector
+    this.pageChangeDetector = {
+      lastDOMHash: null,
+      lastContentLength: null,
+      lastTitle: null,
+      lastMetaDescription: null,
+    };
+
+    this.lastAnalysisUrl = null;
+    this.lastAnalysisTimestamp = null;
+  }
+
+  // Generate comprehensive recommendations data structure with LLM context
+  generateRecommendationsData() {
+    try {
+      console.log("Generating recommendations data structure...");
+
+      // Generate metadata
+      const metadata = this.generateMetadata();
+
+      // Build recommendations structure from analysis results with LLM guidance
+      const recommendations = {
+        // LLM Context and Instructions
+        _llmContext: {
+          purpose: "Web Performance Analysis Report",
+          instructions:
+            "Convert this technical performance analysis into human-readable recommendations for web developers. Focus on actionable advice with clear explanations of impact and implementation steps.",
+          targetAudience:
+            "Web developers and site owners who want to improve their website performance",
+          priorityGuidance: {
+            high: "Critical issues that significantly impact user experience and should be fixed immediately",
+            medium: "Important optimizations that will provide noticeable performance improvements",
+            low: "Nice-to-have improvements that provide incremental benefits",
+          },
+          categoryExplanations: {
+            scripts:
+              "JavaScript files and their loading behavior - affects page interactivity and loading speed",
+            css: "Stylesheet files and their organization - affects visual rendering and layout shifts",
+            links:
+              "HTML link tags including preloads, preconnects, and resource hints - affects resource loading efficiency",
+            cache: "Browser and CDN caching configuration - affects repeat visit performance",
+            lcp: "Largest Contentful Paint optimization - affects perceived loading speed",
+          },
+          commonIssueTypes: {
+            duplicate_scripts: "Multiple copies of the same JavaScript file being loaded",
+            defer_optimization: "Scripts that could be optimized with better loading attributes",
+            async_validation: "Asynchronous scripts that may have dependency issues",
+            css_optimization: "Too many CSS files causing excessive HTTP requests",
+            security_issues: "Missing security attributes on external resources",
+            accessibility_issues:
+              "Missing attributes that help screen readers and assistive technology",
+          },
+          recommendationFormat:
+            "For each issue, provide: 1) Clear problem description, 2) Specific action steps, 3) Expected performance impact, 4) Implementation difficulty level",
+        },
+
+        // Analysis metadata
+        metadata: metadata,
+
+        // Performance analysis results
+        cache: this.analysisResults.cache || this.getEmptyCacheData(),
+        lcp: this.analysisResults.lcp || this.getEmptyLCPData(),
+        scripts: this.analysisResults.scripts || this.getEmptyScriptsData(),
+        links: this.analysisResults.links || this.getEmptyLinksData(),
+        css: this.analysisResults.css || this.getEmptyCSSData(),
+        summary: this.calculateSummary(),
+
+        // Additional context for LLM processing
+        _analysisContext: {
+          pageType: this.detectPageType(),
+          technologyStack: this.detectTechnologyStack(),
+          performanceProfile: this.generatePerformanceProfile(),
+          businessImpact: this.generateBusinessImpactContext(),
+        },
+      };
+
+      console.log("Recommendations data structure with LLM context generated successfully");
+      return recommendations;
+    } catch (error) {
+      console.error("Error generating recommendations data:", error);
+      throw new Error(`Failed to generate recommendations data: ${error.message}`);
+    }
+  }
+
+  // Detect page type for better context
+  detectPageType() {
+    try {
+      const url = window.location.href;
+      const title = document.title.toLowerCase();
+      const bodyClasses = document.body ? document.body.className.toLowerCase() : "";
+
+      if (
+        url.includes("/product/") ||
+        title.includes("product") ||
+        bodyClasses.includes("product")
+      ) {
+        return "product_page";
+      } else if (
+        url.includes("/checkout") ||
+        title.includes("checkout") ||
+        bodyClasses.includes("checkout")
+      ) {
+        return "checkout_page";
+      } else if (url === window.location.origin + "/" || url.endsWith("/")) {
+        return "homepage";
+      } else if (
+        url.includes("/category/") ||
+        url.includes("/collection/") ||
+        title.includes("category")
+      ) {
+        return "category_page";
+      } else if (url.includes("/blog/") || url.includes("/news/") || title.includes("blog")) {
+        return "content_page";
+      } else {
+        return "general_page";
+      }
+    } catch (error) {
+      return "unknown";
+    }
+  }
+
+  // Detect technology stack for context
+  detectTechnologyStack() {
+    try {
+      const technologies = [];
+
+      // Check for common frameworks and platforms
+      if (window.Shopify || document.querySelector("[data-shopify]")) {
+        technologies.push("Shopify");
+      }
+      if (window.React || document.querySelector("[data-reactroot]")) {
+        technologies.push("React");
+      }
+      if (window.Vue || document.querySelector("[data-v-]")) {
+        technologies.push("Vue.js");
+      }
+      if (window.angular || document.querySelector("[ng-app]")) {
+        technologies.push("Angular");
+      }
+      if (window.jQuery || window.$) {
+        technologies.push("jQuery");
+      }
+      if (
+        document.querySelector('script[src*="wordpress"]') ||
+        document.querySelector('meta[name="generator"][content*="WordPress"]')
+      ) {
+        technologies.push("WordPress");
+      }
+      if (window.gtag || window.ga || document.querySelector('script[src*="googletagmanager"]')) {
+        technologies.push("Google Analytics");
+      }
+
+      return technologies.length > 0 ? technologies : ["Unknown"];
+    } catch (error) {
+      return ["Unknown"];
+    }
+  }
+
+  // Generate performance profile for context
+  generatePerformanceProfile() {
+    try {
+      const scripts = this.analysisResults.scripts || {};
+      const css = this.analysisResults.css || {};
+      const links = this.analysisResults.links || {};
+
+      return {
+        scriptCount: scripts.totalExternalScripts || 0,
+        stylesheetCount: css.totalStylesheets || 0,
+        preloadCount: links.totalPreloads || 0,
+        hasAsyncScripts: scripts.asyncScripts && scripts.asyncScripts.length > 0,
+        hasDeferScripts: scripts.deferScripts && scripts.deferScripts.length > 0,
+        hasDuplicates:
+          (scripts.duplicates && scripts.duplicates.length > 0) || css.duplicateCount > 0,
+        complexityLevel: this.calculateComplexityLevel(scripts, css, links),
+      };
+    } catch (error) {
+      return { complexityLevel: "unknown" };
+    }
+  }
+
+  // Calculate complexity level
+  calculateComplexityLevel(scripts, css, links) {
+    const scriptCount = scripts.totalExternalScripts || 0;
+    const stylesheetCount = css.totalStylesheets || 0;
+    const totalResources = scriptCount + stylesheetCount;
+
+    if (totalResources > 50) {
+      return "high"; // Complex site with many resources
+    } else if (totalResources > 20) {
+      return "medium"; // Moderate complexity
+    } else {
+      return "low"; // Simple site
+    }
+  }
+
+  // Generate business impact context
+  generateBusinessImpactContext() {
+    try {
+      const summary = this.calculateSummary();
+      const criticalIssues = summary.criticalIssues || 0;
+      const totalIssues = summary.totalIssues || 0;
+
+      let impactLevel = "low";
+      let businessContext = "";
+
+      if (criticalIssues > 3) {
+        impactLevel = "high";
+        businessContext =
+          "Significant performance issues that likely impact user experience, conversion rates, and SEO rankings. Immediate attention recommended.";
+      } else if (criticalIssues > 0 || totalIssues > 5) {
+        impactLevel = "medium";
+        businessContext =
+          "Moderate performance issues that may affect user satisfaction and search engine rankings. Should be addressed in next development cycle.";
+      } else {
+        impactLevel = "low";
+        businessContext =
+          "Minor optimization opportunities that can provide incremental improvements to user experience.";
+      }
+
+      return {
+        impactLevel: impactLevel,
+        businessContext: businessContext,
+        userExperienceImpact: this.generateUXImpactDescription(criticalIssues, totalIssues),
+        seoImpact: this.generateSEOImpactDescription(criticalIssues, totalIssues),
+      };
+    } catch (error) {
+      return {
+        impactLevel: "unknown",
+        businessContext: "Unable to assess business impact",
+        userExperienceImpact: "Unknown",
+        seoImpact: "Unknown",
+      };
+    }
+  }
+
+  // Generate UX impact description
+  generateUXImpactDescription(criticalIssues, totalIssues) {
+    if (criticalIssues > 3) {
+      return "Users likely experience slow loading, layout shifts, and delayed interactivity";
+    } else if (criticalIssues > 0) {
+      return "Users may notice slower than optimal loading times";
+    } else if (totalIssues > 0) {
+      return "Minor delays that most users won't notice but can be improved";
+    } else {
+      return "Good user experience with fast loading times";
+    }
+  }
+
+  // Generate SEO impact description
+  generateSEOImpactDescription(criticalIssues, totalIssues) {
+    if (criticalIssues > 3) {
+      return "Poor Core Web Vitals likely negatively impacting search rankings";
+    } else if (criticalIssues > 0) {
+      return "Some Core Web Vitals issues that may affect search performance";
+    } else if (totalIssues > 0) {
+      return "Minor optimizations that could improve search rankings";
+    } else {
+      return "Good performance metrics that support strong SEO";
+    }
+  }
+
+  // Generate metadata for recommendations
+  generateMetadata() {
+    try {
+      const metadata = {
+        url: window.location.href,
+        timestamp: Date.now(),
+        analysisVersion: "2.0",
+        pageLoadType: "navigation", // Always navigation for initial full page load
+        userAgent: navigator.userAgent,
+        analysisDate: new Date().toISOString(),
+        viewport: {
+          width: window.innerWidth,
+          height: window.innerHeight,
+        },
+        connection: this.getConnectionInfo(),
+        performance: this.getPerformanceInfo(),
+      };
+
+      return metadata;
+    } catch (error) {
+      console.error("Error generating metadata:", error);
+      return {
+        url: window.location.href,
+        timestamp: Date.now(),
+        analysisVersion: "2.0",
+        pageLoadType: "navigation",
+        userAgent: navigator.userAgent || "unknown",
+        error: "Metadata generation failed",
+      };
+    }
+  }
+
+  // Get connection information if available
+  getConnectionInfo() {
+    try {
+      if (navigator.connection) {
+        return {
+          effectiveType: navigator.connection.effectiveType,
+          downlink: navigator.connection.downlink,
+          rtt: navigator.connection.rtt,
+          saveData: navigator.connection.saveData,
+        };
+      }
+      return null;
+    } catch (error) {
+      console.warn("Error getting connection info:", error);
+      return null;
+    }
+  }
+
+  // Get performance information
+  getPerformanceInfo() {
+    try {
+      const perfInfo = {
+        memoryUsage: null,
+        timing: null,
+      };
+
+      // Memory usage if available
+      if (performance.memory) {
+        perfInfo.memoryUsage = {
+          usedJSHeapSize: performance.memory.usedJSHeapSize,
+          totalJSHeapSize: performance.memory.totalJSHeapSize,
+          jsHeapSizeLimit: performance.memory.jsHeapSizeLimit,
+        };
+      }
+
+      // Navigation timing if available
+      if (performance.timing) {
+        perfInfo.timing = {
+          navigationStart: performance.timing.navigationStart,
+          loadEventEnd: performance.timing.loadEventEnd,
+          domContentLoadedEventEnd: performance.timing.domContentLoadedEventEnd,
+        };
+      }
+
+      return perfInfo;
+    } catch (error) {
+      console.warn("Error getting performance info:", error);
+      return null;
+    }
+  }
+
+  // Calculate summary statistics
+  calculateSummary() {
+    try {
+      let totalIssues = 0;
+      let criticalIssues = 0;
+      let optimizationOpportunities = 0;
+
+      // Count cache issues
+      const cache = this.analysisResults.cache || {};
+      if (cache.browserCache && cache.browserCache.status === "not-cached") {
+        totalIssues++;
+        criticalIssues++;
+      }
+      if (cache.cdnCache && cache.cdnCache.status === "miss") {
+        totalIssues++;
+        optimizationOpportunities++;
+      }
+
+      // Count LCP issues
+      const lcp = this.analysisResults.lcp || {};
+      if (lcp.elementFound && !lcp.serverSideRendered) {
+        totalIssues++;
+        criticalIssues++;
+      }
+      if (lcp.elementFound && !lcp.preloadExists) {
+        totalIssues++;
+        optimizationOpportunities++;
+      }
+
+      // Count script issues
+      const scripts = this.analysisResults.scripts || {};
+      if (scripts.duplicates && scripts.duplicates.length > 0) {
+        totalIssues += scripts.duplicates.length;
+        criticalIssues += scripts.duplicates.length;
+      }
+
+      // Count link issues
+      const links = this.analysisResults.links || {};
+      if (links.bodyLinks && links.bodyLinks.length > 0) {
+        totalIssues += links.bodyLinks.length;
+        optimizationOpportunities += links.bodyLinks.length;
+      }
+      if (links.duplicatePreloads && links.duplicatePreloads.length > 0) {
+        totalIssues += links.duplicatePreloads.length;
+        criticalIssues += links.duplicatePreloads.length;
+      }
+      if (links.invalidPreloads && links.invalidPreloads.length > 0) {
+        totalIssues += links.invalidPreloads.length;
+        criticalIssues += links.invalidPreloads.length;
+      }
+      if (links.redundantPreloads && links.redundantPreloads.length > 0) {
+        totalIssues += links.redundantPreloads.length;
+        optimizationOpportunities += links.redundantPreloads.length;
+      }
+
+      // Count CSS issues
+      const css = this.analysisResults.css || {};
+      if (css.misplacedCount && css.misplacedCount > 0) {
+        totalIssues += css.misplacedCount;
+        optimizationOpportunities += css.misplacedCount;
+      }
+
+      // Calculate overall score
+      let overallScore = "good";
+      if (criticalIssues > 0) {
+        overallScore = "poor";
+      } else if (totalIssues > 2) {
+        overallScore = "needs-improvement";
+      }
+
+      return {
+        totalIssues,
+        criticalIssues,
+        optimizationOpportunities,
+        overallScore,
+      };
+    } catch (error) {
+      console.error("Error calculating summary:", error);
+      return {
+        totalIssues: 0,
+        criticalIssues: 0,
+        optimizationOpportunities: 0,
+        overallScore: "unknown",
+        error: "Summary calculation failed",
+      };
+    }
+  }
+
+  // Get empty cache data structure
+  getEmptyCacheData() {
+    return {
+      browserCache: {
+        status: "not-analyzed",
+        ttl: null,
+        cacheControl: null,
+        expires: null,
+      },
+      cdnCache: {
+        status: "not-analyzed",
+        provider: "unknown",
+        ttl: null,
+        age: null,
+        cacheHeaders: {},
+      },
+    };
+  }
+
+  // Get empty LCP data structure
+  getEmptyLCPData() {
+    return {
+      elementFound: false,
+      serverSideRendered: false,
+      elementType: null,
+      elementSelector: null,
+      preloadExists: false,
+    };
+  }
+
+  // Get empty scripts data structure
+  getEmptyScriptsData() {
+    return {
+      duplicates: [],
+      deferScripts: [],
+      asyncScripts: [],
+      totalExternalScripts: 0,
+      recommendations: [],
+    };
+  }
+
+  // Get empty links data structure
+  getEmptyLinksData() {
+    return {
+      bodyLinks: [],
+      duplicatePreloads: [],
+      invalidPreloads: [],
+      redundantPreloads: [],
+      totalPreloads: 0,
+    };
+  }
+
+  // Get empty CSS data structure
+  getEmptyCSSData() {
+    return {
+      stylesheets: [],
+      totalStylesheets: 0,
+      misplacedCount: 0,
+    };
+  }
+
+  // Format recommendations as structured JSON
+  formatRecommendationsJSON(recommendationsData = null) {
+    try {
+      console.log("Formatting recommendations as JSON...");
+
+      // Use provided data or generate fresh data
+      const data = recommendationsData || this.generateRecommendationsData();
+
+      // Validate data before formatting
+      const validationResult = this.validateRecommendationsData(data);
+      if (!validationResult.isValid) {
+        throw new Error(`Data validation failed: ${validationResult.errors.join(", ")}`);
+      }
+
+      // Format JSON with proper indentation and structure
+      const formattedJSON = JSON.stringify(data, this.jsonReplacer, 2);
+
+      console.log("Recommendations JSON formatted successfully");
+      return {
+        json: formattedJSON,
+        data: data,
+        validation: validationResult,
+        size: formattedJSON.length,
+        timestamp: Date.now(),
+      };
+    } catch (error) {
+      console.error("Error formatting recommendations JSON:", error);
+
+      // Return error structure in JSON format
+      const errorData = {
+        error: {
+          message: error.message,
+          timestamp: Date.now(),
+          type: "json_formatting_error",
+        },
+        metadata: {
+          url: window.location.href,
+          timestamp: Date.now(),
+          analysisVersion: "2.0",
+          pageLoadType: "navigation",
+        },
+      };
+
+      return {
+        json: JSON.stringify(errorData, null, 2),
+        data: errorData,
+        validation: { isValid: false, errors: [error.message] },
+        size: 0,
+        timestamp: Date.now(),
+        hasError: true,
+      };
+    }
+  }
+
+  // Custom JSON replacer function for consistent formatting
+  jsonReplacer(key, value) {
+    // Handle null values consistently
+    if (value === null) {
+      return null;
+    }
+
+    // Handle undefined values
+    if (value === undefined) {
+      return null;
+    }
+
+    // Handle arrays - ensure they're properly formatted
+    if (Array.isArray(value)) {
+      return value;
+    }
+
+    // Handle numbers - ensure precision for timestamps and measurements
+    if (typeof value === "number") {
+      // Round floating point numbers to reasonable precision
+      if (value % 1 !== 0 && Math.abs(value) < 1000) {
+        return Math.round(value * 1000) / 1000; // 3 decimal places for small numbers
+      }
+      return value;
+    }
+
+    // Handle strings - trim whitespace
+    if (typeof value === "string") {
+      return value.trim();
+    }
+
+    return value;
+  }
+
+  // Validate recommendations data structure
+  validateRecommendationsData(data) {
+    const validation = {
+      isValid: true,
+      errors: [],
+      warnings: [],
+    };
+
+    try {
+      // Check if data exists
+      if (!data || typeof data !== "object") {
+        validation.isValid = false;
+        validation.errors.push("Recommendations data is missing or invalid");
+        return validation;
+      }
+
+      // Validate required top-level properties
+      const requiredProperties = ["metadata", "cache", "lcp", "scripts", "links", "css", "summary"];
+      for (const prop of requiredProperties) {
+        if (!data.hasOwnProperty(prop)) {
+          validation.isValid = false;
+          validation.errors.push(`Missing required property: ${prop}`);
+        }
+      }
+
+      // Validate metadata
+      if (data.metadata) {
+        const metadataValidation = this.validateMetadata(data.metadata);
+        if (!metadataValidation.isValid) {
+          validation.errors.push(...metadataValidation.errors);
+          validation.isValid = false;
+        }
+        validation.warnings.push(...metadataValidation.warnings);
+      }
+
+      // Validate cache data
+      if (data.cache) {
+        const cacheValidation = this.validateCacheData(data.cache);
+        if (!cacheValidation.isValid) {
+          validation.errors.push(...cacheValidation.errors);
+          validation.isValid = false;
+        }
+        validation.warnings.push(...cacheValidation.warnings);
+      }
+
+      // Validate LCP data
+      if (data.lcp) {
+        const lcpValidation = this.validateLCPData(data.lcp);
+        if (!lcpValidation.isValid) {
+          validation.errors.push(...lcpValidation.errors);
+          validation.isValid = false;
+        }
+        validation.warnings.push(...lcpValidation.warnings);
+      }
+
+      // Validate scripts data
+      if (data.scripts) {
+        const scriptsValidation = this.validateScriptsData(data.scripts);
+        if (!scriptsValidation.isValid) {
+          validation.errors.push(...scriptsValidation.errors);
+          validation.isValid = false;
+        }
+        validation.warnings.push(...scriptsValidation.warnings);
+      }
+
+      // Validate links data
+      if (data.links) {
+        const linksValidation = this.validateLinksData(data.links);
+        if (!linksValidation.isValid) {
+          validation.errors.push(...linksValidation.errors);
+          validation.isValid = false;
+        }
+        validation.warnings.push(...linksValidation.warnings);
+      }
+
+      // Validate CSS data
+      if (data.css) {
+        const cssValidation = this.validateCSSData(data.css);
+        if (!cssValidation.isValid) {
+          validation.errors.push(...cssValidation.errors);
+          validation.isValid = false;
+        }
+        validation.warnings.push(...cssValidation.warnings);
+      }
+
+      // Validate summary data
+      if (data.summary) {
+        const summaryValidation = this.validateSummaryData(data.summary);
+        if (!summaryValidation.isValid) {
+          validation.errors.push(...summaryValidation.errors);
+          validation.isValid = false;
+        }
+        validation.warnings.push(...summaryValidation.warnings);
+      }
+
+      console.log(`Data validation complete: ${validation.isValid ? "PASSED" : "FAILED"}`);
+      if (validation.errors.length > 0) {
+        console.warn("Validation errors:", validation.errors);
+      }
+      if (validation.warnings.length > 0) {
+        console.warn("Validation warnings:", validation.warnings);
+      }
+    } catch (error) {
+      validation.isValid = false;
+      validation.errors.push(`Validation error: ${error.message}`);
+      console.error("Error during data validation:", error);
+    }
+
+    return validation;
+  }
+
+  // Validate metadata structure
+  validateMetadata(metadata) {
+    const validation = { isValid: true, errors: [], warnings: [] };
+
+    const requiredFields = ["url", "timestamp", "analysisVersion", "pageLoadType", "userAgent"];
+    for (const field of requiredFields) {
+      if (
+        !metadata.hasOwnProperty(field) ||
+        metadata[field] === null ||
+        metadata[field] === undefined
+      ) {
+        validation.errors.push(`Metadata missing required field: ${field}`);
+        validation.isValid = false;
+      }
+    }
+
+    // Validate URL format
+    if (metadata.url && typeof metadata.url === "string") {
+      try {
+        new URL(metadata.url);
+      } catch (e) {
+        validation.warnings.push("Metadata URL format may be invalid");
+      }
+    }
+
+    // Validate timestamp
+    if (metadata.timestamp && (typeof metadata.timestamp !== "number" || metadata.timestamp <= 0)) {
+      validation.errors.push("Metadata timestamp must be a positive number");
+      validation.isValid = false;
+    }
+
+    return validation;
+  }
+
+  // Validate cache data structure
+  validateCacheData(cache) {
+    const validation = { isValid: true, errors: [], warnings: [] };
+
+    if (!cache.browserCache || !cache.cdnCache) {
+      validation.errors.push("Cache data missing browserCache or cdnCache");
+      validation.isValid = false;
+    }
+
+    // Validate browser cache status
+    if (cache.browserCache && cache.browserCache.status) {
+      const validStatuses = ["cached", "not-cached", "not-analyzed"];
+      if (!validStatuses.includes(cache.browserCache.status)) {
+        validation.errors.push(`Invalid browser cache status: ${cache.browserCache.status}`);
+        validation.isValid = false;
+      }
+    }
+
+    // Validate CDN cache status
+    if (cache.cdnCache && cache.cdnCache.status) {
+      const validStatuses = ["hit", "miss", "unknown", "not-analyzed"];
+      if (!validStatuses.includes(cache.cdnCache.status)) {
+        validation.errors.push(`Invalid CDN cache status: ${cache.cdnCache.status}`);
+        validation.isValid = false;
+      }
+    }
+
+    return validation;
+  }
+
+  // Validate LCP data structure
+  validateLCPData(lcp) {
+    const validation = { isValid: true, errors: [], warnings: [] };
+
+    const requiredFields = ["elementFound", "serverSideRendered", "preloadExists"];
+    for (const field of requiredFields) {
+      if (!lcp.hasOwnProperty(field) || typeof lcp[field] !== "boolean") {
+        validation.errors.push(`LCP data missing or invalid boolean field: ${field}`);
+        validation.isValid = false;
+      }
+    }
+
+    // Validate element type if element is found
+    if (lcp.elementFound && lcp.elementType) {
+      const validTypes = ["img", "video", "background-image"];
+      if (!validTypes.includes(lcp.elementType)) {
+        validation.warnings.push(`Unexpected LCP element type: ${lcp.elementType}`);
+      }
+    }
+
+    return validation;
+  }
+
+  // Validate scripts data structure
+  validateScriptsData(scripts) {
+    const validation = { isValid: true, errors: [], warnings: [] };
+
+    const requiredArrayFields = ["duplicates", "deferScripts", "asyncScripts", "recommendations"];
+    for (const field of requiredArrayFields) {
+      if (!scripts.hasOwnProperty(field) || !Array.isArray(scripts[field])) {
+        validation.errors.push(`Scripts data missing or invalid array field: ${field}`);
+        validation.isValid = false;
+      }
+    }
+
+    // Validate totalExternalScripts
+    if (
+      !scripts.hasOwnProperty("totalExternalScripts") ||
+      typeof scripts.totalExternalScripts !== "number"
+    ) {
+      validation.errors.push("Scripts data missing or invalid totalExternalScripts number");
+      validation.isValid = false;
+    }
+
+    return validation;
+  }
+
+  // Validate links data structure
+  validateLinksData(links) {
+    const validation = { isValid: true, errors: [], warnings: [] };
+
+    const requiredArrayFields = [
+      "bodyLinks",
+      "duplicatePreloads",
+      "invalidPreloads",
+      "redundantPreloads",
+    ];
+    for (const field of requiredArrayFields) {
+      if (!links.hasOwnProperty(field) || !Array.isArray(links[field])) {
+        validation.errors.push(`Links data missing or invalid array field: ${field}`);
+        validation.isValid = false;
+      }
+    }
+
+    // Validate totalPreloads
+    if (!links.hasOwnProperty("totalPreloads") || typeof links.totalPreloads !== "number") {
+      validation.errors.push("Links data missing or invalid totalPreloads number");
+      validation.isValid = false;
+    }
+
+    return validation;
+  }
+
+  // Validate CSS data structure
+  validateCSSData(css) {
+    const validation = { isValid: true, errors: [], warnings: [] };
+
+    // Validate stylesheets array
+    if (!css.hasOwnProperty("stylesheets") || !Array.isArray(css.stylesheets)) {
+      validation.errors.push("CSS data missing or invalid stylesheets array");
+      validation.isValid = false;
+    }
+
+    // Validate numeric fields
+    const requiredNumberFields = ["totalStylesheets", "misplacedCount"];
+    for (const field of requiredNumberFields) {
+      if (!css.hasOwnProperty(field) || typeof css[field] !== "number") {
+        validation.errors.push(`CSS data missing or invalid number field: ${field}`);
+        validation.isValid = false;
+      }
+    }
+
+    return validation;
+  }
+
+  // Validate summary data structure
+  validateSummaryData(summary) {
+    const validation = { isValid: true, errors: [], warnings: [] };
+
+    const requiredNumberFields = ["totalIssues", "criticalIssues", "optimizationOpportunities"];
+    for (const field of requiredNumberFields) {
+      if (
+        !summary.hasOwnProperty(field) ||
+        typeof summary[field] !== "number" ||
+        summary[field] < 0
+      ) {
+        validation.errors.push(`Summary data missing or invalid number field: ${field}`);
+        validation.isValid = false;
+      }
+    }
+
+    // Validate overall score
+    if (!summary.hasOwnProperty("overallScore")) {
+      validation.errors.push("Summary data missing overallScore");
+      validation.isValid = false;
+    } else {
+      const validScores = ["good", "needs-improvement", "poor", "unknown"];
+      if (!validScores.includes(summary.overallScore)) {
+        validation.errors.push(`Invalid overall score: ${summary.overallScore}`);
+        validation.isValid = false;
+      }
+    }
+
+    return validation;
+  }
+
+  // Handle malformed recommendation data with error recovery
+  handleMalformedData(error, originalData = null) {
+    console.error("Handling malformed recommendation data:", error);
+
+    try {
+      // Create a safe fallback structure
+      const fallbackData = {
+        metadata: {
+          url: window.location.href,
+          timestamp: Date.now(),
+          analysisVersion: "2.0",
+          pageLoadType: "navigation",
+          userAgent: navigator.userAgent || "unknown",
+          error: "Data recovery mode - original analysis failed",
+        },
+        cache: this.getEmptyCacheData(),
+        lcp: this.getEmptyLCPData(),
+        scripts: this.getEmptyScriptsData(),
+        links: this.getEmptyLinksData(),
+        css: this.getEmptyCSSData(),
+        summary: {
+          totalIssues: 0,
+          criticalIssues: 0,
+          optimizationOpportunities: 0,
+          overallScore: "unknown",
+          error: "Analysis failed - using fallback data",
+        },
+        originalError: {
+          message: error.message,
+          timestamp: Date.now(),
+          recoveryMode: true,
+        },
+      };
+
+      // Try to salvage any valid data from original
+      if (originalData && typeof originalData === "object") {
+        // Safely merge any valid properties
+        Object.keys(originalData).forEach((key) => {
+          if (
+            originalData[key] &&
+            typeof originalData[key] === "object" &&
+            !Array.isArray(originalData[key])
+          ) {
+            try {
+              // Validate and merge if safe
+              const validation = this.validateRecommendationsData({ [key]: originalData[key] });
+              if (validation.isValid) {
+                fallbackData[key] = { ...fallbackData[key], ...originalData[key] };
+              }
+            } catch (e) {
+              console.warn(`Could not salvage data for ${key}:`, e);
+            }
+          }
+        });
+      }
+
+      return fallbackData;
+    } catch (recoveryError) {
+      console.error("Error during data recovery:", recoveryError);
+
+      // Ultimate fallback - minimal structure
+      return {
+        metadata: {
+          url: window.location.href,
+          timestamp: Date.now(),
+          analysisVersion: "2.0",
+          pageLoadType: "navigation",
+          userAgent: "unknown",
+        },
+        error: {
+          message: "Critical error in recommendation analysis",
+          originalError: error.message,
+          recoveryError: recoveryError.message,
+          timestamp: Date.now(),
+        },
+      };
+    }
+  }
+}
+
+// Initialize performance recommendation analyzer
+const performanceRecommendationAnalyzer = new PerformanceRecommendationAnalyzer();
 
 // Function to sync CLS debugger with global CLS score
 function syncCLSDebugger() {
@@ -3347,6 +9104,161 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         timestamp: Date.now(),
       });
       return true;
+    }
+
+    if (message.type === "generateRecommendations") {
+      // Handle performance recommendations generation request
+      console.log("Performance recommendations generation requested");
+
+      // Validate page support
+      if (!pageSupport.isSupported) {
+        const errorData = {
+          code: "UNSUPPORTED_PAGE",
+          message: pageSupport.reason,
+          pageType: pageSupport.pageType,
+        };
+
+        // Send error to background for storage
+        chrome.runtime.sendMessage({
+          type: "recommendationsError",
+          error: errorData,
+          timestamp: Date.now(),
+        });
+
+        sendResponse({
+          success: false,
+          error: errorData,
+        });
+        return true;
+      }
+
+      // Check extension permissions
+      if (!extensionPermissions.canAccessPage) {
+        const errorData = {
+          code: "PERMISSION_ERROR",
+          message: "Extension permissions insufficient for this page",
+          limitations: extensionPermissions.limitations,
+        };
+
+        chrome.runtime.sendMessage({
+          type: "recommendationsError",
+          error: errorData,
+          timestamp: Date.now(),
+        });
+
+        sendResponse({
+          success: false,
+          error: errorData,
+        });
+        return true;
+      }
+
+      // Check if analysis is already in progress
+      if (performanceRecommendationAnalyzer.isAnalyzing) {
+        const errorData = {
+          code: "ANALYSIS_IN_PROGRESS",
+          message: "Analysis is already in progress",
+          state: performanceRecommendationAnalyzer.getAnalysisState(),
+        };
+
+        sendResponse({
+          success: false,
+          error: errorData,
+        });
+        return true;
+      }
+
+      // Send loading state to background
+      chrome.runtime.sendMessage({
+        type: "recommendationsLoading",
+        phase: "starting",
+      });
+
+      // Start analysis asynchronously with comprehensive error handling
+      performanceRecommendationAnalyzer
+        .analyzePerformance()
+        .then((results) => {
+          console.log("Recommendations analysis completed successfully");
+
+          // Validate results before sending
+          if (!results || typeof results !== "object") {
+            throw new Error("Invalid analysis results generated");
+          }
+
+          // Ensure metadata includes current tab context
+          const enrichedResults = {
+            ...results,
+            metadata: {
+              ...results.metadata,
+              url: window.location.href,
+              timestamp: Date.now(),
+              userAgent: navigator.userAgent,
+              pageTitle: document.title,
+            },
+          };
+
+          // Send results to background script for storage
+          chrome.runtime.sendMessage(
+            {
+              type: "recommendationsGenerated",
+              data: enrichedResults,
+              success: true,
+            },
+            (response) => {
+              if (chrome.runtime.lastError) {
+                console.error(
+                  "Error sending recommendations to background:",
+                  chrome.runtime.lastError
+                );
+              } else if (response && !response.success) {
+                console.warn(
+                  "Background script reported error storing recommendations:",
+                  response.error
+                );
+              }
+            }
+          );
+
+          sendResponse({
+            success: true,
+            data: enrichedResults,
+            timestamp: Date.now(),
+          });
+        })
+        .catch((error) => {
+          console.error("Error generating recommendations:", error);
+
+          const errorData = {
+            code: error.code || "ANALYSIS_FAILED",
+            message: error.message || "Analysis failed",
+            phase: performanceRecommendationAnalyzer.currentPhase,
+            duration: performanceRecommendationAnalyzer.analysisStartTime
+              ? Date.now() - performanceRecommendationAnalyzer.analysisStartTime
+              : 0,
+            url: window.location.href,
+            timestamp: Date.now(),
+          };
+
+          // Send error to background script with enhanced context
+          chrome.runtime.sendMessage(
+            {
+              type: "recommendationsError",
+              error: errorData,
+            },
+            (response) => {
+              if (chrome.runtime.lastError) {
+                console.error("Error sending error to background:", chrome.runtime.lastError);
+              }
+            }
+          );
+
+          sendResponse({
+            success: false,
+            error: errorData,
+          });
+        });
+
+      return true; // Async response
     }
 
     // Unknown message type

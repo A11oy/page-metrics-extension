@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Core Web Vitals Assessment",
-  "version": "2.0",
+  "version": "2.1",
   "description": "Comprehensive Core Web Vitals assessment tool with real-time CLS tracking, SPA support, visual debugging, and JSON export capabilities for web performance analysis.",
   "permissions": ["tabs", "storage", "activeTab", "clipboardWrite"],
   "background": {
