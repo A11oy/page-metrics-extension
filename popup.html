@@ -33,6 +33,11 @@
           class="last-updated"
           aria-label="Last updated time"
         ></span>
+        <span
+          id="extension-status"
+          class="extension-status"
+          aria-label="Extension status"
+        ></span>
       </div>
     </header>
 
@@ -132,7 +137,7 @@
               aria-hidden="true"
               >🔄</span
             >
-            <span class="button-text">Refresh Data</span>
+            <span class="button-text">Hard Refresh</span>
           </button>
 
           <button
@@ -225,7 +230,7 @@
             id="refresh-description"
             class="control-description"
           >
-            Force refresh performance metrics for current page
+            Hard refresh page (bypass cache) and clear all extension data
           </div>
           <div
             id="cls-description"

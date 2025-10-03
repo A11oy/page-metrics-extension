@@ -659,6 +659,45 @@ function sendLimitationsMessage(limitations) {
 let clsObserverInstance = null;
 let isInitialized = false;
 
+// Detect page reloads and clear extension state
+let pageLoadStartTime = Date.now();
+let isPageReload = false;
+
+// Check if this is a page reload (not SPA navigation)
+function detectPageReload() {
+  // Check if the page was loaded recently (within last 2 seconds)
+  const timeSinceLoad = Date.now() - pageLoadStartTime;
+
+  // Check performance navigation type
+  const navigationEntries = performance.getEntriesByType("navigation");
+  if (navigationEntries.length > 0) {
+    const navEntry = navigationEntries[0];
+    isPageReload = navEntry.type === "reload" || navEntry.type === "navigate";
+
+    if (isPageReload) {
+      console.log("Page reload detected, resetting all extension state");
+      resetAndCollectMetrics(false, "page_reload");
+    }
+  }
+
+  return isPageReload;
+}
+
+// Send loading state immediately when script starts
+chrome.runtime.sendMessage({ type: "metricsLoading" });
+
+// Listen for page load events
+document.addEventListener("DOMContentLoaded", () => {
+  console.log("DOMContentLoaded event - checking for page reload");
+  detectPageReload();
+});
+
+// Also check on window load
+window.addEventListener("load", () => {
+  console.log("Window load event - checking for page reload");
+  detectPageReload();
+});
+
 // Add a simple test function to trigger performance analysis
 window.testPerformanceAnalysis = function () {
   console.log("=== Testing Performance Analysis ===");
@@ -696,6 +735,52 @@ window.testPerformanceAnalysis = function () {
     }
   } catch (error) {
     console.error("Test failed:", error);
+  }
+};
+
+// Add a test function specifically for cache analysis
+window.testCacheAnalysis = function () {
+  console.log("=== Testing Cache Analysis ===");
+
+  try {
+    if (typeof PerformanceRecommendationAnalyzer !== "undefined") {
+      const analyzer = new PerformanceRecommendationAnalyzer();
+
+      console.log("Testing header fetching...");
+      analyzer
+        .tryFetchActualHeaders()
+        .then((headers) => {
+          console.log("Headers fetched:", headers);
+
+          if (headers) {
+            return analyzer.analyzeCacheHeaders(headers);
+          } else {
+            console.log("No headers available, testing fallback...");
+            return analyzer.analyzeCacheHeaders(null);
+          }
+        })
+        .then((cacheResults) => {
+          console.log("✅ Cache Analysis Results:", cacheResults);
+        })
+        .catch((error) => {
+          console.error("❌ Cache Analysis Failed:", error);
+        });
+
+      // Also test the integrated cache analysis method
+      console.log("Testing integrated cache analysis...");
+      analyzer
+        .analyzeCache()
+        .then((integratedResults) => {
+          console.log("✅ Integrated Cache Analysis Results:", integratedResults);
+        })
+        .catch((error) => {
+          console.error("❌ Integrated Cache Analysis Failed:", error);
+        });
+    } else {
+      console.log("PerformanceRecommendationAnalyzer not available");
+    }
+  } catch (error) {
+    console.error("Cache test failed:", error);
   }
 };
 
@@ -744,6 +829,9 @@ window.testDOMAnalysis = function () {
 if (validatePageAndInitialize()) {
   console.log("Initializing performance measurement...");
 
+  // Send loading state to background
+  chrome.runtime.sendMessage({ type: "metricsLoading" });
+
   // Initialize CLS observer
   clsObserverInstance = new CLSObserver();
 
@@ -758,6 +846,12 @@ if (validatePageAndInitialize()) {
   isInitialized = true;
 } else {
   console.log("Skipping performance measurement initialization due to page/permission issues");
+  // Send error state for unsupported pages
+  chrome.runtime.sendMessage({
+    type: "metricsError",
+    errorType: "page_not_supported",
+    errorMessage: "Page type not supported for performance measurement",
+  });
 }
 
 // CLS Visual Debugging System
@@ -1735,17 +1829,17 @@ class PerformanceRecommendationAnalyzer {
     try {
       const responseHeaders = headers || this.responseHeaders || {};
 
-      console.log("Analyzing cache headers...");
+      console.log("Analyzing cache headers...", responseHeaders);
 
       const result = {
         browserCache: {
-          status: "not-cached",
+          status: "not-analyzed",
           ttl: null,
           cacheControl: null,
           expires: null,
         },
         cdnCache: {
-          status: "unknown",
+          status: "not-analyzed",
           provider: "unknown",
           ttl: null,
           age: null,
@@ -1753,10 +1847,68 @@ class PerformanceRecommendationAnalyzer {
         },
       };
 
-      // Safely extract headers
-      const cacheControl = this.safeGetHeader(responseHeaders, "cache-control");
-      const expires = this.safeGetHeader(responseHeaders, "expires");
-      const age = this.safeGetHeader(responseHeaders, "age");
+      // Check if we have any headers to analyze
+      if (!responseHeaders || Object.keys(responseHeaders).length === 0) {
+        console.warn("No response headers available for cache analysis");
+        result.browserCache.status = "not-analyzed";
+        result.cdnCache.status = "not-analyzed";
+        return result;
+      }
+
+      // Check if this is fallback data
+      if (responseHeaders.fallback) {
+        console.log("Using fallback header data for cache analysis");
+
+        // Try to infer cache status from available data
+        if (responseHeaders.cache && responseHeaders.cache.general) {
+          const generalCache = responseHeaders.cache.general;
+
+          // Check for inferred cache status
+          if (generalCache["x-inferred-cache"] === "likely-cached") {
+            result.browserCache.status = "cached";
+            result.browserCache.cacheControl = "inferred from timing";
+          }
+        }
+
+        // If we still don't have cache info, mark as not-cached rather than not-analyzed
+        if (result.browserCache.status === "not-analyzed") {
+          result.browserCache.status = "not-cached";
+        }
+        if (result.cdnCache.status === "not-analyzed") {
+          result.cdnCache.status = "unknown";
+        }
+
+        return result;
+      }
+
+      // Handle different header formats
+      let headerSource = responseHeaders;
+      if (responseHeaders.raw) {
+        headerSource = responseHeaders.raw;
+      } else if (responseHeaders.cache) {
+        // Use categorized headers if available
+        const browserHeaders = responseHeaders.cache.browserCache || {};
+        const cdnHeaders = responseHeaders.cache.cdnCache || {};
+
+        // Analyze browser cache from categorized headers
+        if (Object.keys(browserHeaders).length > 0) {
+          result.browserCache = this.analyzeBrowserCacheFromHeaders(browserHeaders);
+        }
+
+        // Analyze CDN cache from categorized headers
+        if (Object.keys(cdnHeaders).length > 0) {
+          result.cdnCache = this.analyzeCDNCacheFromHeaders(cdnHeaders);
+        }
+
+        return result;
+      }
+
+      // Safely extract headers from raw headers
+      const cacheControl = this.safeGetHeader(headerSource, "cache-control");
+      const expires = this.safeGetHeader(headerSource, "expires");
+      const age = this.safeGetHeader(headerSource, "age");
+
+      console.log("Extracted cache headers:", { cacheControl, expires, age });
 
       // Browser cache analysis
       if (cacheControl || expires) {
@@ -1771,21 +1923,90 @@ class PerformanceRecommendationAnalyzer {
             result.browserCache.ttl = parseInt(maxAgeMatch[1]);
           }
         }
+      } else {
+        result.browserCache.status = "not-cached";
       }
 
       // CDN cache analysis with error handling
       try {
-        const cdnAnalysis = this.analyzeCDNHeaders(responseHeaders);
+        const cdnAnalysis = this.analyzeCDNHeaders(headerSource);
         result.cdnCache = { ...result.cdnCache, ...cdnAnalysis };
       } catch (cdnError) {
         console.warn("CDN analysis failed:", cdnError);
       }
 
+      console.log("Cache analysis result:", result);
       return result;
     } catch (error) {
       console.error("Cache header analysis failed:", error);
       throw new Error(`Cache analysis error: ${error.message}`);
     }
+  }
+
+  // Analyze browser cache from categorized headers
+  analyzeBrowserCacheFromHeaders(browserHeaders) {
+    const result = {
+      status: "not-cached",
+      ttl: null,
+      cacheControl: null,
+      expires: null,
+    };
+
+    const cacheControl = browserHeaders["cache-control"];
+    const expires = browserHeaders["expires"];
+
+    if (cacheControl || expires) {
+      result.status = "cached";
+      result.cacheControl = cacheControl;
+      result.expires = expires;
+
+      // Extract TTL from cache-control
+      if (cacheControl) {
+        const maxAgeMatch = cacheControl.match(/max-age=(\d+)/);
+        if (maxAgeMatch) {
+          result.ttl = parseInt(maxAgeMatch[1]);
+        }
+      }
+    }
+
+    return result;
+  }
+
+  // Analyze CDN cache from categorized headers
+  analyzeCDNCacheFromHeaders(cdnHeaders) {
+    const result = {
+      status: "unknown",
+      provider: "unknown",
+      ttl: null,
+      age: null,
+      cacheHeaders: cdnHeaders,
+    };
+
+    // Detect CDN provider and status
+    if (cdnHeaders["cf-cache-status"]) {
+      result.provider = "cloudflare";
+      result.status = cdnHeaders["cf-cache-status"].toLowerCase().includes("hit") ? "hit" : "miss";
+    } else if (cdnHeaders["x-amz-cf-id"]) {
+      result.provider = "aws";
+      result.status = cdnHeaders["age"] && parseInt(cdnHeaders["age"]) > 0 ? "hit" : "miss";
+    } else if (cdnHeaders["x-cache"]) {
+      if (cdnHeaders["x-cache"].toLowerCase().includes("akamai")) {
+        result.provider = "akamai";
+      } else if (cdnHeaders["x-served-by"] && cdnHeaders["x-served-by"].includes("fastly")) {
+        result.provider = "fastly";
+      }
+      result.status = cdnHeaders["x-cache"].toLowerCase().includes("hit") ? "hit" : "miss";
+    }
+
+    // Extract age/TTL
+    if (cdnHeaders["age"]) {
+      const ageValue = parseInt(cdnHeaders["age"]);
+      if (!isNaN(ageValue)) {
+        result.age = ageValue;
+      }
+    }
+
+    return result;
   }
 
   // Safe header extraction
@@ -1885,12 +2106,20 @@ class PerformanceRecommendationAnalyzer {
         console.warn("HTML content is very large, analysis may be slow");
       }
 
-      // Extract response headers from current page (fallback method)
+      // Try to get actual response headers first, then fallback
+      console.log("Attempting to fetch actual response headers...");
       try {
-        this.responseHeaders = this.extractFallbackHeaders();
+        const actualHeaders = await this.tryFetchActualHeaders();
+        if (actualHeaders && Object.keys(actualHeaders).length > 0) {
+          console.log("Successfully fetched actual response headers");
+          this.responseHeaders = actualHeaders;
+        } else {
+          console.log("No actual headers available, using fallback");
+          this.responseHeaders = this.extractFallbackHeaders();
+        }
       } catch (headerError) {
-        console.warn("Error extracting response headers:", headerError);
-        this.responseHeaders = {};
+        console.warn("Error fetching actual headers, using fallback:", headerError);
+        this.responseHeaders = this.extractFallbackHeaders();
       }
 
       const fetchDuration = Date.now() - startTime;
@@ -1920,7 +2149,18 @@ class PerformanceRecommendationAnalyzer {
         const bodyHTML = document.body ? document.body.outerHTML : "";
         const headHTML = document.head ? document.head.outerHTML : "";
         this.htmlContent = `<!DOCTYPE html><html>${headHTML}${bodyHTML}</html>`;
-        this.responseHeaders = this.extractFallbackHeaders();
+
+        // Try to get headers for fallback too
+        try {
+          const actualHeaders = await this.tryFetchActualHeaders();
+          if (actualHeaders && Object.keys(actualHeaders).length > 0) {
+            this.responseHeaders = actualHeaders;
+          } else {
+            this.responseHeaders = this.extractFallbackHeaders();
+          }
+        } catch (headerError) {
+          this.responseHeaders = this.extractFallbackHeaders();
+        }
 
         console.log("Using minimal DOM fallback for analysis");
 
@@ -2456,6 +2696,118 @@ class PerformanceRecommendationAnalyzer {
     return fallbackHeaders;
   }
 
+  // Try to fetch actual response headers using a HEAD request
+  async tryFetchActualHeaders() {
+    try {
+      console.log("Attempting to fetch actual response headers...");
+
+      // Try HEAD request first
+      try {
+        const headResponse = await fetch(window.location.href, {
+          method: "HEAD",
+          cache: "no-cache", // Ensure we get fresh headers
+        });
+
+        if (headResponse.ok) {
+          console.log("HEAD request successful, extracting headers");
+          const extractedHeaders = this.extractResponseHeaders(headResponse);
+          if (extractedHeaders && Object.keys(extractedHeaders.raw || {}).length > 0) {
+            return extractedHeaders;
+          }
+        } else {
+          console.warn("HEAD request failed with status:", headResponse.status);
+        }
+      } catch (headError) {
+        console.warn("HEAD request failed:", headError.message);
+      }
+
+      // Fallback: Try GET request with range header to minimize data transfer
+      try {
+        console.log("Trying GET request with range header as fallback...");
+        const getResponse = await fetch(window.location.href, {
+          method: "GET",
+          headers: {
+            Range: "bytes=0-0", // Request only first byte
+          },
+          cache: "no-cache",
+        });
+
+        if (getResponse.ok || getResponse.status === 206) {
+          // 206 = Partial Content
+          console.log("GET request successful, extracting headers");
+          const extractedHeaders = this.extractResponseHeaders(getResponse);
+          if (extractedHeaders && Object.keys(extractedHeaders.raw || {}).length > 0) {
+            return extractedHeaders;
+          }
+        } else {
+          console.warn("GET request failed with status:", getResponse.status);
+        }
+      } catch (getError) {
+        console.warn("GET request failed:", getError.message);
+      }
+
+      // Final fallback: Try to extract headers from performance entries
+      console.log("Trying to extract headers from performance entries...");
+      return this.extractHeadersFromPerformanceEntries();
+    } catch (error) {
+      console.warn("All header extraction methods failed:", error);
+      return null;
+    }
+  }
+
+  // Extract headers from performance entries as a last resort
+  extractHeadersFromPerformanceEntries() {
+    try {
+      const navigationEntries = performance.getEntriesByType("navigation");
+      if (navigationEntries.length === 0) {
+        return null;
+      }
+
+      const entry = navigationEntries[0];
+      const headers = {
+        raw: {},
+        cache: {
+          browserCache: {},
+          cdnCache: {},
+          general: {},
+        },
+        security: {},
+        performance: {},
+        other: {},
+        fallback: true,
+        fallbackReason: "Extracted from performance entries",
+      };
+
+      // Add timing-based pseudo-headers
+      if (entry.responseStart && entry.requestStart) {
+        headers.performance["x-timing-ttfb"] = `${(
+          entry.responseStart - entry.requestStart
+        ).toFixed(2)}ms`;
+      }
+
+      if (entry.domContentLoadedEventEnd && entry.domContentLoadedEventStart) {
+        headers.performance["x-timing-dom-load"] = `${(
+          entry.domContentLoadedEventEnd - entry.domContentLoadedEventStart
+        ).toFixed(2)}ms`;
+      }
+
+      // Try to infer some cache information from timing
+      if (entry.responseStart && entry.fetchStart) {
+        const responseTime = entry.responseStart - entry.fetchStart;
+        if (responseTime < 50) {
+          // Very fast response might indicate cache hit
+          headers.cache.general["x-inferred-cache"] = "likely-cached";
+        }
+      }
+
+      console.log("Extracted headers from performance entries");
+      return headers;
+    } catch (error) {
+      console.warn("Failed to extract headers from performance entries:", error);
+      return null;
+    }
+  }
+
   // Find elements with background images
   findBackgroundImageElements(container) {
     const elementsWithBgImages = [];
@@ -2585,7 +2937,7 @@ class PerformanceRecommendationAnalyzer {
 
       // Step 4: Analyze cache optimization opportunities
       console.log("Step 4: Analyzing cache...");
-      this.analysisResults.cache = this.analyzeCache();
+      this.analysisResults.cache = await this.analyzeCache();
 
       // Step 5: Analyze LCP optimization opportunities
       console.log("Step 5: Analyzing LCP...");
@@ -5192,13 +5544,28 @@ class PerformanceRecommendationAnalyzer {
   }
 
   // Analyze cache optimization opportunities
-  analyzeCache() {
+  async analyzeCache() {
     try {
       console.log("Analyzing cache optimization opportunities...");
 
-      // For now, return empty cache analysis
-      // This will be expanded in future implementations
-      return this.getEmptyCacheData();
+      // Use the cache analysis results from the main analysis flow if available
+      if (
+        this.analysisResults &&
+        this.analysisResults.cache &&
+        Object.keys(this.analysisResults.cache).length > 0
+      ) {
+        console.log("Using existing cache analysis results");
+        return this.analysisResults.cache;
+      }
+
+      // If no existing results, perform cache analysis
+      console.log("Performing new cache analysis...");
+
+      // Use the response headers that were fetched during HTML fetch
+      const cacheResults = await this.analyzeCacheHeaders(this.responseHeaders);
+
+      console.log("Cache analysis completed:", cacheResults);
+      return cacheResults;
     } catch (error) {
       console.error("Error analyzing cache:", error);
       return this.getEmptyCacheData();
@@ -5210,12 +5577,232 @@ class PerformanceRecommendationAnalyzer {
     try {
       console.log("Analyzing LCP optimization opportunities...");
 
-      // For now, return empty LCP analysis
-      // This will be expanded when LCP analysis is fully implemented
-      return this.getEmptyLCPData();
+      const result = {
+        elementFound: false,
+        serverSideRendered: false,
+        elementType: null,
+        elementSelector: null,
+        preloadExists: false,
+        analysis: {
+          candidateElements: [],
+          recommendations: [],
+        },
+      };
+
+      // Try to use the globally captured LCP element first
+      if (lcpElement && lcpElementSelector) {
+        console.log("Using globally captured LCP element:", lcpElementSelector);
+
+        result.elementFound = true;
+        result.elementSelector = lcpElementSelector;
+        result.elementType = this.determineLCPElementType(lcpElement);
+        result.serverSideRendered = this.isElementServerSideRendered(lcpElement);
+        result.preloadExists = this.checkLCPPreloadExists(lcpElement);
+
+        result.analysis.candidateElements.push({
+          element: lcpElement,
+          selector: lcpElementSelector,
+          type: result.elementType,
+          serverSideRendered: result.serverSideRendered,
+          preloadExists: result.preloadExists,
+        });
+
+        // Add recommendations based on analysis
+        if (!result.serverSideRendered) {
+          result.analysis.recommendations.push({
+            type: "server-side-rendering",
+            priority: "high",
+            description:
+              "Consider server-side rendering the LCP element to improve loading performance",
+          });
+        }
+
+        if (
+          !result.preloadExists &&
+          (result.elementType === "img" || result.elementType === "background-image")
+        ) {
+          result.analysis.recommendations.push({
+            type: "preload-lcp-resource",
+            priority: "high",
+            description: "Add a preload link for the LCP resource to improve loading performance",
+          });
+        }
+
+        return result;
+      }
+
+      // Fallback: Try to find LCP candidates from DOM
+      console.log("No globally captured LCP element, analyzing DOM for candidates...");
+
+      const candidates = this.findLCPCandidates();
+      if (candidates.length > 0) {
+        const topCandidate = candidates[0]; // Use the first/most likely candidate
+
+        result.elementFound = true;
+        result.elementSelector = this.generateElementSelector(topCandidate);
+        result.elementType = this.determineLCPElementType(topCandidate);
+        result.serverSideRendered = this.isElementServerSideRendered(topCandidate);
+        result.preloadExists = this.checkLCPPreloadExists(topCandidate);
+
+        result.analysis.candidateElements = candidates.map((el) => ({
+          element: el,
+          selector: this.generateElementSelector(el),
+          type: this.determineLCPElementType(el),
+          serverSideRendered: this.isElementServerSideRendered(el),
+          preloadExists: this.checkLCPPreloadExists(el),
+        }));
+
+        console.log(
+          `Found ${candidates.length} LCP candidates, using top candidate:`,
+          result.elementSelector
+        );
+      }
+
+      return result;
     } catch (error) {
       console.error("Error analyzing LCP:", error);
       return this.getEmptyLCPData();
+    }
+  }
+
+  // Find potential LCP candidate elements
+  findLCPCandidates() {
+    const candidates = [];
+
+    try {
+      // Look for large images above the fold
+      const images = document.querySelectorAll("img");
+      images.forEach((img) => {
+        const rect = img.getBoundingClientRect();
+        const isAboveFold = rect.top < window.innerHeight;
+        const isLarge = rect.width * rect.height > 10000; // Arbitrary threshold for "large"
+
+        if (isAboveFold && isLarge && img.src) {
+          candidates.push(img);
+        }
+      });
+
+      // Look for elements with large background images above the fold
+      const elementsWithBg = this.findBackgroundImageElements(document.body);
+      elementsWithBg.forEach(({ element }) => {
+        const rect = element.getBoundingClientRect();
+        const isAboveFold = rect.top < window.innerHeight;
+        const isLarge = rect.width * rect.height > 10000;
+
+        if (isAboveFold && isLarge) {
+          candidates.push(element);
+        }
+      });
+
+      // Look for large text blocks (potential LCP text)
+      const textElements = document.querySelectorAll("h1, h2, p, div");
+      textElements.forEach((el) => {
+        const rect = el.getBoundingClientRect();
+        const isAboveFold = rect.top < window.innerHeight;
+        const hasSignificantText = el.textContent && el.textContent.trim().length > 50;
+        const isLarge = rect.width * rect.height > 5000;
+
+        if (isAboveFold && hasSignificantText && isLarge) {
+          candidates.push(el);
+        }
+      });
+
+      // Sort candidates by size (largest first)
+      candidates.sort((a, b) => {
+        const aRect = a.getBoundingClientRect();
+        const bRect = b.getBoundingClientRect();
+        const aSize = aRect.width * aRect.height;
+        const bSize = bRect.width * bRect.height;
+        return bSize - aSize;
+      });
+    } catch (error) {
+      console.error("Error finding LCP candidates:", error);
+    }
+
+    return candidates;
+  }
+
+  // Determine the type of LCP element
+  determineLCPElementType(element) {
+    if (!element) return null;
+
+    const tagName = element.tagName.toLowerCase();
+
+    if (tagName === "img") {
+      return "img";
+    } else if (tagName === "video") {
+      return "video";
+    } else {
+      // Check for background image
+      const computedStyle = window.getComputedStyle(element);
+      const backgroundImage = computedStyle.backgroundImage;
+      if (backgroundImage && backgroundImage !== "none" && backgroundImage.includes("url(")) {
+        return "background-image";
+      }
+    }
+
+    return "text-block";
+  }
+
+  // Check if element is server-side rendered
+  isElementServerSideRendered(element) {
+    if (!element) return false;
+
+    try {
+      // Check if element has content immediately available (not loaded via JS)
+      // This is a heuristic - elements present in initial HTML are likely SSR
+      const hasInitialContent =
+        element.textContent || element.src || (element.style && element.style.backgroundImage);
+
+      // Check if element is not dynamically created
+      const isNotDynamic =
+        !element.hasAttribute("data-dynamic") &&
+        !element.classList.contains("dynamic") &&
+        !element.classList.contains("lazy");
+
+      return hasInitialContent && isNotDynamic;
+    } catch (error) {
+      console.error("Error checking server-side rendering:", error);
+      return false;
+    }
+  }
+
+  // Check if LCP resource has a preload link
+  checkLCPPreloadExists(element) {
+    if (!element) return false;
+
+    try {
+      let resourceUrl = null;
+
+      // Get resource URL based on element type
+      if (element.tagName.toLowerCase() === "img") {
+        resourceUrl = element.src;
+      } else {
+        // Check for background image
+        const computedStyle = window.getComputedStyle(element);
+        const backgroundImage = computedStyle.backgroundImage;
+        if (backgroundImage && backgroundImage.includes("url(")) {
+          const urlMatch = backgroundImage.match(/url\(['"]?([^'"]+)['"]?\)/);
+          if (urlMatch && urlMatch[1]) {
+            resourceUrl = urlMatch[1];
+          }
+        }
+      }
+
+      if (!resourceUrl) return false;
+
+      // Check if there's a preload link for this resource
+      const preloadLinks = document.querySelectorAll('link[rel="preload"]');
+      for (const link of preloadLinks) {
+        if (link.href === resourceUrl || link.href.includes(resourceUrl)) {
+          return true;
+        }
+      }
+
+      return false;
+    } catch (error) {
+      console.error("Error checking LCP preload:", error);
+      return false;
     }
   }
 
@@ -6707,8 +7294,12 @@ function syncCLSDebugger() {
 }
 
 // Enhanced function to reset and collect metrics for SPA transitions
-function resetAndCollectMetrics(isSpaNavigation = true) {
-  console.log("Resetting metrics for", isSpaNavigation ? "SPA navigation" : "forced refresh");
+function resetAndCollectMetrics(isSpaNavigation = true, reason = "spa_navigation") {
+  console.log(
+    "Resetting metrics for",
+    reason,
+    isSpaNavigation ? "(SPA navigation)" : "(page reload)"
+  );
 
   // Store previous metrics for comparison (optional debugging)
   const previousMetrics = {
@@ -6727,12 +7318,19 @@ function resetAndCollectMetrics(isSpaNavigation = true) {
   lcpElementSelector = null;
   lcpElementInfo = null;
 
+  // Reset performance recommendation analyzer if it exists
+  if (typeof performanceRecommendationAnalyzer !== "undefined") {
+    performanceRecommendationAnalyzer.reset();
+  }
+
   // Sync CLS debugger with reset score
   syncCLSDebugger();
 
-  // Only set to SPA if this is actually an SPA navigation
+  // Set transition type based on navigation type
   if (isSpaNavigation) {
     transitionType = "spa";
+  } else {
+    transitionType = "navigation";
   }
 
   // Reset visual completion tracking with enhanced state management

@@ -6,6 +6,29 @@ const CWV_THRESHOLDS = {
   TTFB: { good: 0.8, needsImprovement: 1.8 },
 };
 
+// Update extension status indicator
+function updateExtensionStatus(state) {
+  const statusElement = document.getElementById("extension-status");
+  if (!statusElement) return;
+
+  // Clear previous classes
+  statusElement.className = "extension-status";
+
+  // Set new state
+  statusElement.classList.add(state);
+
+  // Set text based on state
+  const statusTexts = {
+    loading: "Loading...",
+    ready: "Ready",
+    error: "Error",
+    analyzing: "Analyzing...",
+  };
+
+  statusElement.textContent = statusTexts[state] || "Unknown";
+  statusElement.setAttribute("aria-label", `Extension status: ${statusTexts[state] || "Unknown"}`);
+}
+
 // Evaluate metric against thresholds
 function evaluateMetric(metricName, value) {
   const thresholds = CWV_THRESHOLDS[metricName];
@@ -3089,6 +3112,7 @@ function renderMetrics() {
             context = "navigation";
           }
           showLoadingState(context);
+          updateExtensionStatus("loading");
         } else {
           // No metrics and not loading - show generic error with helpful message
           showGenericError(tabUrl, errors);
@@ -3136,6 +3160,9 @@ function showLoadingState(context = "default") {
 }
 
 function showErrorState(message) {
+  // Update status to error
+  updateExtensionStatus("error");
+
   // Use loading state manager for error handling
   loadingStateManager.errorLoading(message);
 
@@ -3280,6 +3307,9 @@ function showMetricsTable(metrics, tabUrl) {
   if (loadingState) loadingState.style.display = "none";
   if (errorState) errorState.style.display = "none";
   if (metricsTable) metricsTable.style.display = "table";
+
+  // Update status to ready when metrics are displayed
+  updateExtensionStatus("ready");
 
   if (!metricsBody) return;
 
@@ -3433,33 +3463,81 @@ function initializeRefreshButton() {
   const refreshButton = document.getElementById("refresh-metrics-btn");
   if (refreshButton) {
     refreshButton.addEventListener("click", (event) => {
+      event.preventDefault();
+
       // Animate button click
       animateButtonClick(refreshButton);
 
-      // Force refresh current tab data
-      stateManager.forceRefreshCurrentTab();
-
-      // Show loading state
-      loadingStateManager.startLoading("manual-refresh");
-
-      // Show feedback to user
-      showToast("Refreshing performance metrics...", "info");
-      announceToScreenReader("Refreshing performance metrics");
-
-      // Disable button temporarily with smooth transition
-      refreshButton.disabled = true;
-      refreshButton.style.transform = "scale(0.95)";
-      refreshButton.querySelector(".button-text").textContent = "Refreshing...";
-
-      // Re-enable after a delay with smooth transition
-      setTimeout(() => {
-        refreshButton.disabled = false;
-        refreshButton.style.transform = "";
-        refreshButton.querySelector(".button-text").textContent = "Refresh Data";
-      }, 2000);
+      // Show confirmation and perform hard refresh
+      performHardRefresh();
     });
   } else {
     console.error("Refresh button not found!");
+  }
+}
+
+// Perform hard refresh of the current page
+function performHardRefresh() {
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (tabs[0]) {
+      const tabId = tabs[0].id;
+
+      // Clear all stored data for this tab before refresh
+      clearTabData(tabId);
+
+      // Show feedback to user
+      showToast("Performing hard refresh...", "info");
+      announceToScreenReader("Performing hard refresh to clear cache and reload metrics");
+
+      // Perform hard refresh (bypass cache)
+      chrome.tabs.reload(tabId, { bypassCache: true }, () => {
+        if (chrome.runtime.lastError) {
+          console.error("Failed to reload tab:", chrome.runtime.lastError);
+          showToast("Failed to refresh page", "error");
+        } else {
+          console.log("Hard refresh initiated for tab", tabId);
+          // Close popup after successful refresh
+          window.close();
+        }
+      });
+    } else {
+      showToast("No active tab found", "error");
+    }
+  });
+}
+
+// Clear all stored data for a specific tab
+function clearTabData(tabId) {
+  console.log("Clearing all data for tab", tabId);
+
+  // Clear from chrome storage
+  const keysToRemove = [
+    `metrics_${tabId}`,
+    `metricsLoading_${tabId}`,
+    `recommendations_${tabId}`,
+    `recommendationsTimestamp_${tabId}`,
+    `recommendationsLoading_${tabId}`,
+    `recommendationsError_${tabId}`,
+    `clsDebugger_${tabId}`,
+    `errors_${tabId}`,
+    `hasErrors_${tabId}`,
+    `pageSupport_${tabId}`,
+    `permissionError_${tabId}`,
+    `apiSupport_${tabId}`,
+    `limitations_${tabId}`,
+  ];
+
+  chrome.storage.local.remove(keysToRemove, () => {
+    if (chrome.runtime.lastError) {
+      console.error("Error clearing tab data:", chrome.runtime.lastError);
+    } else {
+      console.log("Tab data cleared successfully");
+    }
+  });
+
+  // Clear from state manager
+  if (stateManager) {
+    stateManager.clearTabData(tabId);
   }
 }
 
@@ -3473,6 +3551,9 @@ function initializeRecommendationsButton() {
 
       // Generate recommendations
       generateRecommendations();
+
+      // Update status to analyzing
+      updateExtensionStatus("analyzing");
     });
 
     // Initialize button state
