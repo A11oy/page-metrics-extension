@@ -33,6 +33,11 @@
           class="last-updated"
           aria-label="Last updated time"
         ></span>
+        <span
+          id="extension-status"
+          class="extension-status"
+          aria-label="Extension status"
+        ></span>
       </div>
     </header>
 
@@ -132,7 +137,7 @@
               aria-hidden="true"
               >🔄</span
             >
-            <span class="button-text">Refresh Data</span>
+            <span class="button-text">Hard Refresh</span>
           </button>
 
           <button
@@ -155,6 +160,62 @@
           </button>
         </div>
 
+        <div class="recommendations-section">
+          <button
+            id="generate-recommendations-btn"
+            class="control-button recommendations-button"
+            type="button"
+            aria-describedby="recommendations-description"
+          >
+            <span
+              class="button-icon"
+              aria-hidden="true"
+              >🎯</span
+            >
+            <span class="button-text">Generate Recommendations</span>
+          </button>
+        </div>
+      </section>
+
+      <section
+        id="recommendations-display-section"
+        class="recommendations-display-section"
+        aria-label="Performance recommendations"
+        style="display: none"
+      >
+        <div class="recommendations-header">
+          <h2 class="recommendations-title">Performance Recommendations</h2>
+          <div class="recommendations-actions">
+            <button
+              id="copy-recommendations-btn"
+              class="control-button secondary copy-button"
+              type="button"
+              aria-describedby="copy-recommendations-description"
+            >
+              <span
+                class="button-icon"
+                aria-hidden="true"
+                >📋</span
+              >
+              <span class="button-text">Copy for LLM</span>
+            </button>
+          </div>
+        </div>
+
+        <div
+          id="recommendations-content"
+          class="recommendations-content"
+          role="region"
+          aria-label="Recommendations data"
+        >
+          <!-- Recommendations will be populated here -->
+        </div>
+      </section>
+
+      <section
+        id="controls-section-bottom"
+        aria-label="Extension controls"
+      >
         <div
           class="control-descriptions"
           aria-hidden="true"
@@ -169,13 +230,25 @@
             id="refresh-description"
             class="control-description"
           >
-            Force refresh performance metrics for current page
+            Hard refresh page (bypass cache) and clear all extension data
           </div>
           <div
             id="cls-description"
             class="control-description"
           >
             Toggle visual highlighting of layout shift sources
+          </div>
+          <div
+            id="recommendations-description"
+            class="control-description"
+          >
+            Generate performance optimization recommendations for this page
+          </div>
+          <div
+            id="copy-recommendations-description"
+            class="control-description"
+          >
+            Copy LLM-ready analysis with instructions to clipboard
           </div>
         </div>
       </section>

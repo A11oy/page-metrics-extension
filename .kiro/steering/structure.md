@@ -4,9 +4,9 @@
 
 - `manifest.json` - Extension configuration and permissions
 - `background.js` - Service worker for cross-tab communication and storage
-- `content.js` - Injected script for performance metric collection
+- `content.js` - Injected script for performance metric collection and recommendations
 - `popup.html` - Extension popup interface structure
-- `popup.js` - Popup logic and metric display
+- `popup.js` - Popup logic, metric display, and recommendations UI
 - `styles.css` - Popup styling and visual design
 - `metrics_icon.png` - Extension icon (16x16, 48x48, 128x128)
 - `README.md` - Project documentation
@@ -16,36 +16,157 @@
 ### Background Script (`background.js`)
 
 - Tab-specific metric storage using `metricsStore` object
-- Message handling for performance data and loading states
+- Message handling for performance data, recommendations, and loading states
 - Tab lifecycle management (activation, updates)
-- Storage key pattern: `metrics_${tabId}`, `metricsLoading_${tabId}`
+- Storage key patterns:
+  - `metrics_${tabId}` - Performance metrics data
+  - `metricsLoading_${tabId}` - Loading state tracking
+  - `recommendations_${tabId}` - Performance recommendations data
 
 ### Content Script (`content.js`)
 
-- Performance metric collection for both navigation types
+#### Core Performance Measurement
+
+- Performance metric collection for both navigation types (traditional and SPA)
 - SPA transition detection using multiple strategies
 - Visual completion tracking with frame analysis
 - Observer pattern for LCP, paint events, and DOM mutations
 
+#### Performance Recommendations Engine
+
+- **PerformanceRecommendationAnalyzer** class - Main analysis engine
+- HTML structure parsing and resource analysis
+- Cache header analysis (browser and CDN caching)
+- LCP element detection and optimization analysis
+- CSS/JavaScript loading pattern analysis
+- Resource preloading validation
+
+#### Analysis Components
+
+- **ThresholdEvaluator** - Core Web Vitals threshold assessment
+- **CLSObserver** - Comprehensive CLS measurement with visual debugging
+- **LoadingStateManager** - Enhanced loading state management
+- **ErrorHandler** - User-friendly error handling and reporting
+
 ### Popup Interface (`popup.js` + `popup.html`)
 
-- Tab-aware metric display
-- Real-time updates every 300ms
-- Debug controls and information
-- Graceful error handling for unsupported pages
+#### Core Features
+
+- Tab-aware metric display with real-time updates
+- Performance recommendations UI with categorized results
+- Debug controls and diagnostic information
+- Accessibility-compliant interface with screen reader support
+
+#### UI Components
+
+- **StateManager** - Tab state management and stale data prevention
+- **ToastManager** - User feedback and notification system
+- **LoadingStateManager** - Progress tracking and loading animations
+- Metric threshold evaluation with visual indicators
+
+## Key Classes and Architecture
+
+### PerformanceRecommendationAnalyzer
+
+```javascript
+class PerformanceRecommendationAnalyzer {
+  // Core analysis methods
+  analyzePerformance()           // Main analysis orchestrator
+  analyzeCacheHeaders()          // Browser and CDN cache analysis
+  analyzeLCP()                   // LCP element detection and optimization
+  analyzeCSS()                   // Stylesheet loading patterns
+  analyzeScripts()               // JavaScript loading optimization
+  analyzeImages()                // Image optimization opportunities
+
+  // Helper methods
+  fetchDocumentHTML()            // Retrieve original HTML response
+  parseHTMLStructure()           // Parse DOM structure for analysis
+  generateRecommendations()      // Create actionable recommendations
+}
+```
+
+### ThresholdEvaluator
+
+```javascript
+class ThresholdEvaluator {
+  static evaluateMetric(metricName, value)     // Single metric evaluation
+  static evaluateAllMetrics(metrics)          // Batch metric evaluation
+  static isCoreWebVital(metricName)           // Core Web Vital identification
+}
+```
+
+### CLSObserver
+
+```javascript
+class CLSObserver {
+  observe()                      // Start CLS measurement
+  handleLayoutShiftEntries()     // Process layout shift events
+  reset()                        // Reset for SPA navigation
+  getThresholdStatus()           // Evaluate CLS against thresholds
+}
+```
+
+## Data Flow Architecture
+
+### Metric Collection Flow
+
+1. **Content Script** collects performance metrics
+2. **Background Script** stores metrics with tab-specific keys
+3. **Popup** retrieves and displays metrics for active tab
+4. **Real-time updates** every 300ms while popup is open
+
+### Recommendations Flow
+
+1. **User triggers** analysis via "Get Recommendations" button
+2. **Content Script** runs PerformanceRecommendationAnalyzer
+3. **Analysis results** stored in background script
+4. **Popup displays** categorized recommendations with priorities
+
+### Error Handling Flow
+
+1. **Errors captured** at each analysis stage
+2. **User-friendly messages** generated by ErrorHandler
+3. **Fallback mechanisms** ensure graceful degradation
+4. **Debug information** available for troubleshooting
+
+## Storage Patterns
+
+### Tab-Specific Storage
+
+- **Metrics**: `metrics_${tabId}` - Current performance data
+- **Loading States**: `metricsLoading_${tabId}` - Analysis progress
+- **Recommendations**: `recommendations_${tabId}` - Analysis results
+- **Debug Data**: `clsDebugger_${tabId}` - CLS debugging information
+
+### Data Lifecycle
+
+- **Creation**: When page loads or analysis runs
+- **Updates**: Real-time metric updates and recommendation refreshes
+- **Cleanup**: Automatic removal of old tab data (5-minute retention)
+- **Validation**: Cross-tab contamination prevention
 
 ## Naming Conventions
 
-- **Variables**: camelCase (`metricsStore`, `visualCompletionTime`)
-- **Constants**: UPPER_SNAKE_CASE (`SPA_INITIAL_WAIT`, `VISUAL_STABILITY_THRESHOLD`)
-- **Functions**: camelCase with descriptive names (`resetAndCollectMetrics`, `startVisualCompletionTracking`)
-- **CSS Classes**: kebab-case (`metric-title`, `transition-type`)
-- **Storage Keys**: descriptive with tab ID (`metrics_${tabId}`, `metricsLoading_${tabId}`)
+- **Variables**: camelCase (`metricsStore`, `visualCompletionTime`, `performanceRecommendationAnalyzer`)
+- **Constants**: UPPER_SNAKE_CASE (`SPA_INITIAL_WAIT`, `VISUAL_STABILITY_THRESHOLD`, `CWV_THRESHOLDS`)
+- **Functions**: camelCase with descriptive names (`resetAndCollectMetrics`, `startVisualCompletionTracking`, `analyzePerformance`)
+- **CSS Classes**: kebab-case (`metric-title`, `transition-type`, `recommendation-item`)
+- **Storage Keys**: descriptive with tab ID (`metrics_${tabId}`, `recommendations_${tabId}`)
+- **Error Types**: UPPER_SNAKE_CASE (`ANALYSIS_FAILED`, `NETWORK_ERROR`, `PERMISSION_ERROR`)
 
 ## File Dependencies
 
 - `manifest.json` → defines all other files and permissions
-- `content.js` → communicates with `background.js`
+- `content.js` → communicates with `background.js` for storage and cross-tab messaging
 - `popup.js` → reads from storage managed by `background.js`
 - `popup.html` → includes `popup.js` and `styles.css`
 - All files are standalone with no external dependencies
+- Performance recommendations are self-contained within content script
+
+## Performance Considerations
+
+- **Minimal DOM Impact**: Efficient observers to reduce page performance overhead
+- **Tab Isolation**: Prevents cross-tab data contamination
+- **Memory Management**: Automatic cleanup of old data and observers
+- **Graceful Degradation**: Fallback mechanisms for limited API environments
+- **Async Processing**: Non-blocking analysis with progress feedback
